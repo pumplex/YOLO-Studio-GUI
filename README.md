@@ -17,8 +17,9 @@ Whether you're training your first custom model or benchmarking multiple archite
 | 🔧 **Custom base model** | Fine-tune from any `.pt` weights file |
 | 🔍 **Detect** | Run inference on image / video folders |
 | 📷 **Camera** | Live webcam detection with frame capture |
+| 🎞️ **Live Video** | Live video detection with frame capture |
 | 📊 **Benchmark** | Compare multiple models on the same dataset — accuracy, speed, size |
-| ⬇ **Export** | ONNX · TensorRT Engine · CoreML · TF SavedModel · TFLite |
+|  ⬇  **Export** | ONNX · TensorRT Engine · CoreML · TF SavedModel · TFLite |
 | 💡 **Tooltips** | Every control has a contextual help tip |
 | 🌙 **Appearance** | Dark / Light / System theme toggle |
 
@@ -37,9 +38,8 @@ Whether you're training your first custom model or benchmarking multiple archite
 ### 1 — Clone this repository
 
 ```bash
-git clone -b copilot/update-gui-focused-ux-overhaul \
-    https://github.com/pumplex/YOLO_TRAINING_GUI.git
-cd YOLO_TRAINING_GUI
+git clone https://github.com/pumplex/YOLO-Studio-GUI.git
+cd YOLO-Studio-GUI
 ```
 
 ### 2 — Create a virtual environment
@@ -64,6 +64,8 @@ conda activate yolo-studio
 #### 🔥 GPU (NVIDIA CUDA 12.8 — recommended)
 ```bash
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+(For TensorRT export support: pip install tensorrt)
+(For Onyx export support: pip install onnx)
 ```
 
 #### 💻 CPU-only
@@ -208,10 +210,10 @@ Convert a trained model to a deployment format.
 
 ---
 
-## �� Project structure
+## 🏗️ Project structure
 
 ```
-YOLO_TRAINING_GUI/
+YOLO-Studio-GUI/
 ├── main.py               # GUI entry point
 ├── requirements.txt
 ├── README.md
@@ -230,6 +232,6 @@ YOLO_TRAINING_GUI/
 
 Built on top of [Ultralytics YOLO](https://github.com/ultralytics/ultralytics) and [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter).  
 Original project by [SpreadKnowledge](https://github.com/SpreadKnowledge/YOLO_train_detection_GUI).  
-Modernised and extended for [pumplex/YOLO_TRAINING_GUI](https://github.com/pumplex/YOLO_TRAINING_GUI).
+Modernised and extended for [pumplex/YOLO-Studio-GUI](https://github.com/pumplex/YOLO-Studio-GUI).
 
 Licensed under the terms included in [LICENSE](LICENSE).
