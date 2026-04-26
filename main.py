@@ -1821,8 +1821,8 @@ def show_live_video_window() -> None:
         "Continuously adjust audio playback speed to match the actual\n"
         "video frame rate (which may be slower than real-time when YOLO\n"
         "inference is heavy).  Audio slows down smoothly — no pauses or\n"
-        "jarring cuts.  A small drift-correction nudge keeps audio position\n"
-        "aligned with the current video frame over time.\n"
+        "jarring cuts.  Accumulated drift is closed within ~2 frames.\n"
+        "Re-enabling Sync seeks audio to the current frame position.\n"
         "Disable to let audio free-run at 1.0× speed.",
     )
 
@@ -2159,14 +2159,16 @@ def _live_video_thread() -> None:
     changes take effect within one callback block (~46 ms at 44 100 Hz /
     2 048 frames) without any re-extraction, seek jump, or stutter.
 
-    When the "Sync" checkbox is enabled, the video thread tracks an exponential
-    moving average (alpha = 0.15) of the total time spent per frame, including
-    YOLO inference and any throttle sleep.  The audio playback speed is set to
-    ``frame_delay / ema_frame_time`` each frame, which is exactly the ratio by
-    which the video is slower than real-time.  A small proportional correction
-    (gain 0.3) is added to close any accumulated drift so the audio position
-    stays aligned with the on-screen frame.  When Sync is disabled the audio
-    free-runs at 1.0× speed.
+    When the "Sync" checkbox is enabled, the video thread computes a speed EMA
+    (alpha = 0.40, converges in ~4 frames) of the ratio
+    ``frame_delay / actual_frame_time``.  This is the exact fraction by which
+    the video is slower than real-time.  A proportional drift correction
+    (``drift_secs / (2 × frame_time)``) is applied on top to close any
+    accumulated audio–video position error within roughly two frames.  When Sync
+    is re-enabled after being disabled, the audio head is seeked to the current
+    video frame position so any drift that built up while sync was off is cleared
+    instantly.  ``_pcm_paused`` is managed solely by ``_toggle_pause``; the sync
+    path never touches it, so pause/resume works correctly at any point.
     """
     try:
         from ultralytics import YOLO as _YOLO
@@ -2201,8 +2203,9 @@ def _live_video_thread() -> None:
 
         frame_delay = max(0.001, 1.0 / fps)
         frame_idx = 0
-        _audio_was_on = False   # track whether audio was active last iteration
-        _ema_frame_time = frame_delay  # EMA of total seconds spent per frame
+        _audio_was_on = False       # track whether audio was active last iteration
+        _audio_sync_was_on = False  # track previous value of audio_sync for edge detection
+        _ema_speed = 1.0            # EMA of (frame_delay / actual_frame_time); init real-time
 
         while not _live_video_cancel_flag[0]:
             # ── Read per-frame controls (take effect immediately) ──────────
@@ -2309,28 +2312,35 @@ def _live_video_thread() -> None:
             actual_fps = 1.0 / max(frame_proc_time, 0.001)  # shown in status bar
 
             # ── Smooth audio speed to match actual video throughput ────────
-            # EMA of total frame time; alpha=0.15 converges in ~13 frames.
-            _ema_frame_time = 0.85 * _ema_frame_time + 0.15 * total_frame_time
+            # EMA of the speed ratio (alpha=0.4 → converges in ~4 frames).
+            # raw_speed is the exact ratio needed for audio to advance at the
+            # same rate as the video; < 1.0 when inference is slower than
+            # real-time.
+            raw_speed = frame_delay / max(total_frame_time, 1e-6)
+            _ema_speed = 0.6 * _ema_speed + 0.4 * raw_speed
 
             if audio_want and _pcm_stream is not None:
                 if audio_sync:
-                    # Base speed: how fast the video is actually playing relative
-                    # to its native frame rate.  < 1.0 when inference is slow.
-                    base_speed = frame_delay / max(_ema_frame_time, 1e-6)
+                    # If Sync was just re-enabled, seek audio to the current
+                    # frame position so any drift accumulated while sync was
+                    # off is wiped immediately.
+                    if not _audio_sync_was_on:
+                        _pcm_seek(frame_idx / fps)
 
-                    # Drift nudge: if audio has crept ahead, slow it down a
-                    # little extra so the offset self-corrects gradually.
-                    # Gain of 0.3 means 1 s of drift → extra 0.3 speed reduction.
+                    # Drift correction: close any remaining positional error
+                    # within ~2 frames by adjusting speed proportionally.
+                    # Using actual frame time in the denominator makes the
+                    # correction self-scaling across fast and slow hardware.
                     expected_sample = int(frame_idx / fps * _PCM_SAMPLE_RATE)
                     drift_secs = (_pcm_pos[0] - expected_sample) / _PCM_SAMPLE_RATE
-                    drift_nudge = 0.3 * drift_secs
+                    correction = drift_secs / max(2.0 * total_frame_time, 1e-6)
 
-                    _pcm_speed[0] = max(0.1, min(2.0, base_speed - drift_nudge))
-                    _pcm_paused[0] = False
+                    _pcm_speed[0] = max(0.05, min(2.0, _ema_speed - correction))
                 else:
-                    # Sync off: free-run at 1.0×, ensure not paused by old logic
+                    # Sync off: free-run at 1.0×
                     _pcm_speed[0] = 1.0
-                    _pcm_paused[0] = False
+
+            _audio_sync_was_on = audio_sync
 
             # Prepare display image
             img_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
