@@ -12,14 +12,14 @@ Whether you're training your first custom model or benchmarking multiple archite
 
 | Feature | Details |
 |---------|---------|
-| 🏋 **Train** | Detection *and* segmentation models (YOLOv8 → YOLOv12) |
+| 🏋 **Train** | Detection *and* segmentation models (YOLOv8 → YOLOv12), with real-time cleaned log output and accurate epoch progress bar |
 | 📦 **Roboflow ZIP import** | One-click extraction & auto-configuration of Roboflow datasets |
 | 🔧 **Custom base model** | Fine-tune from any `.pt` weights file |
-| 🔍 **Detect** | Run inference on image / video folders |
+| 🔍 **Detect** | Run inference on image / video folders with FP16 and confidence controls |
 | 📷 **Camera** | Live webcam detection with frame capture |
-| 🎞️ **Live Video** | Live video detection with frame capture |
-| 📊 **Benchmark** | Compare multiple models on the same dataset — accuracy, speed, size |
-|  ⬇  **Export** | ONNX · TensorRT Engine · CoreML · TF SavedModel · TFLite |
+| 🎬 **Live Video** | Seekable video playback with pause, frame-accurate seek slider, per-second jump buttons, screenshot (with or without boxes), FP16 inference, confidence control, and `.onnx` / `.engine` model support |
+| 📊 **Benchmark** | Compare multiple models — table + interactive bar charts for accuracy, speed, and size |
+| ⬇ **Export** | ONNX · TensorRT Engine · CoreML · TF SavedModel · TFLite, with a live output log |
 | 💡 **Tooltips** | Every control has a contextual help tip |
 | 🌙 **Appearance** | Dark / Light / System theme toggle |
 
@@ -64,8 +64,10 @@ conda activate yolo-studio
 #### 🔥 GPU (NVIDIA CUDA 12.8 — recommended)
 ```bash
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-(For TensorRT export support: pip install tensorrt)
-(For Onyx export support: pip install onnx)
+# For TensorRT export support:
+pip install tensorrt
+# For ONNX export support:
+pip install onnx
 ```
 
 #### 💻 CPU-only
@@ -80,6 +82,8 @@ pip install torch torchvision
 ```bash
 pip install -r requirements.txt
 ```
+
+> `requirements.txt` includes `matplotlib` for benchmark charts.  If you skipped it, install manually: `pip install matplotlib`.
 
 ### 5 — Run
 
@@ -102,6 +106,9 @@ Train your own YOLO model from scratch or fine-tune an existing one.
 5. Select a **YOLO Model** from the dropdown, or load a **Custom Base Model** (`.pt`).
 6. Fill in **Image Size**, **Epochs**, **Batch Size**, and **Class Names**.
 7. Click **▶ Start Training** — live output streams to the log panel.
+
+The **progress bar** and **epoch counter** update in real time as each epoch completes.  
+ANSI escape codes and carriage-return rewrite sequences (the `[K` characters sometimes visible in raw output) are automatically stripped so the log is always clean and readable.
 
 > **Tip:** Hover over any control for a tooltip explaining what it does.
 
@@ -151,8 +158,9 @@ Run YOLO inference on a folder of images or videos.
 
 1. Click **Select Images/Videos Folder**.
 2. Click **Select Model (.pt)** to load your trained weights.
-3. Click **▶ Start Detection**.
-4. Results are displayed in the viewer — use **◀ ▶** to browse.
+3. Optionally adjust **Confidence Threshold**, enable **FP16** (GPU only), and set **Data Workers**.
+4. Click **▶ Start Detection**.
+5. Results are displayed in the viewer — use **◀ ▶** to browse or **🖼 Open Gallery** to see all results at once.
 
 ---
 
@@ -165,6 +173,29 @@ Real-time detection on a live webcam feed.
 3. Click **▶ START** — detection begins immediately.
 4. Press **Enter** at any time to capture and save the current frame.
 5. Click **■ STOP** to end the session.
+
+---
+
+### 🎬 Live Video tab
+
+Play back a video file with real-time YOLO detection overlaid.
+
+| Control | What it does |
+|---------|-------------|
+| **📂 Video** | Pick any video file (`.mp4`, `.avi`, `.mov`, `.mkv`, …) |
+| **🤖 Model** | Load a `.pt`, `.onnx`, or TensorRT `.engine` model |
+| **Seek slider** | Drag to jump to any point in the video |
+| **−10s / −5s / +5s / +10s** | Jump backwards or forwards by a fixed amount |
+| **⏸ Pause / ▶ Resume** | Freeze and continue playback without restarting |
+| **📷 Screenshot** | Save the current frame as PNG — choose *With Detections* (annotated) or *Raw Frame* (original) |
+| **FP16** | Enable half-precision inference for ~2× speed on NVIDIA GPUs |
+| **Conf** | Minimum detection confidence shown in the overlay |
+| **▶ PLAY / ■ STOP** | Start or stop video playback |
+
+**Performance tips:**
+- Enable **FP16** on an NVIDIA GPU for the biggest speed boost.
+- Use a pre-exported **ONNX** or **TensorRT** model instead of `.pt` for faster inference.
+- Reduce the **Conf** threshold slightly to avoid spending time on borderline detections.
 
 ---
 
@@ -190,6 +221,8 @@ Results are displayed in a colour-coded table:
 
 🟢 **Green** = most accurate · 🔵 **Blue** = fastest · 🟣 **Purple** = lightest
 
+After results appear, click **📊 Show Bar Charts** to open an interactive chart window comparing all four metrics side-by-side.  The chart window includes a standard matplotlib toolbar for zooming, panning, and saving the chart as an image.
+
 ---
 
 ### ⬇ Export tab
@@ -203,6 +236,8 @@ Convert a trained model to a deployment format.
    - **CoreML** — Apple silicon / macOS / iOS
    - **TF SavedModel** / **TFLite** — TensorFlow / mobile / embedded
 3. Click **⬇ Export Model**.
+
+The right panel shows a **live log** of the export process — all Ultralytics output is streamed in real time so you can see exactly what is happening.
 
 > ℹ️ **TensorRT note:** The exported `.engine` file is compiled for the exact GPU it was built on
 > and cannot be transferred to a different GPU model. TensorRT ≥ 8 and CUDA must be installed

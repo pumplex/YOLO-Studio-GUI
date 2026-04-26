@@ -3,6 +3,8 @@
 
 import os
 import sys
+import re
+import time
 import cv2
 import customtkinter as ctk
 import tkinter as tk
@@ -13,9 +15,17 @@ import subprocess
 import mimetypes
 from pathlib import Path
 from queue import Queue, Empty
+from datetime import datetime
 from src.train import create_yaml
 from src.detect import detect_images, is_valid_image, get_model_info, get_media_files
 from src.camera import CameraDetection
+
+# ── ANSI / terminal-escape stripping ──────────────────────────────────────────
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]|\x1b[()][0-9A-Za-z]|\r')
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences and carriage-return characters."""
+    return _ANSI_RE.sub('', text)
 
 mimetypes.init()
 
@@ -222,6 +232,18 @@ _live_video_label         = None
 _live_video_status_label  = None
 _live_video_start_btn     = None
 _live_video_bar           = None
+_live_video_paused        = False
+_live_video_pause_btn     = None
+_live_video_seek_slider   = None
+_live_video_seek_to       = [-1]    # frame to seek to; -1 = no pending seek
+_live_video_frame_ref     = [0]     # current frame index (updated by thread)
+_live_video_total_ref     = [1]     # total frames (set by thread at startup)
+_live_video_fps_ref       = [25.0]  # video fps (set by thread at startup)
+_live_video_seeking       = [False] # True while slider drag is in flight
+_live_video_raw_frame     = [None]  # latest raw BGR frame (screenshots)
+_live_video_ann_frame     = [None]  # latest annotated BGR frame (screenshots)
+_live_video_half_var      = None    # BooleanVar – FP16 inference
+_live_video_conf_var      = None    # DoubleVar  – confidence threshold
 
 # Training queue state
 _train_queue              = []          # list of dict with training job configs
@@ -312,7 +334,12 @@ def on_sidebar_select(key: str) -> None:
     global _detect_model_info_label, _detect_conf_var, _detect_half_var
     global _detect_workers_var, _detect_progress_label, _detect_nav_bar
     global _live_video_label, _live_video_status_label, _live_video_start_btn, _live_video_bar
+    global _live_video_pause_btn, _live_video_seek_slider, _live_video_half_var
+    global _live_video_conf_var, _live_video_paused
     global _train_queue_frame
+
+    # Stop live video playback if running
+    _live_video_cancel_flag[0] = True
 
     clear_frame(main_frame)
 
@@ -338,6 +365,11 @@ def on_sidebar_select(key: str) -> None:
     _live_video_status_label = None
     _live_video_start_btn = None
     _live_video_bar = None
+    _live_video_pause_btn = None
+    _live_video_seek_slider = None
+    _live_video_half_var = None
+    _live_video_conf_var = None
+    _live_video_paused = False
     _train_queue_frame = None
 
     if key == "Train":
@@ -1091,26 +1123,80 @@ def show_camera_detection_window() -> None:
 def show_live_video_window() -> None:
     global _live_video_path, _live_video_label, _live_video_status_label
     global _live_video_start_btn, _live_video_bar, detection_model_path
+    global _live_video_pause_btn, _live_video_seek_slider
+    global _live_video_half_var, _live_video_conf_var
 
     _live_video_path = ""
+    _live_video_cancel_flag[0] = False
 
-    # Display area
+    # ── Display area ──────────────────────────────────────────────────────
     _live_video_label = tk.Label(main_frame, bg="#0d0d0d")
-    _live_video_label.place(relx=0, rely=0, relwidth=1.0, relheight=0.91)
+    _live_video_label.place(relx=0, rely=0, relwidth=1.0, relheight=0.78)
 
-    bar = ctk.CTkFrame(main_frame, corner_radius=0, height=56)
-    bar.place(relx=0, rely=0.91, relwidth=1.0, relheight=0.09)
+    # ── Seek / position slider strip ──────────────────────────────────────
+    seek_strip = ctk.CTkFrame(main_frame, corner_radius=0, fg_color="#111111", height=28)
+    seek_strip.place(relx=0, rely=0.78, relwidth=1.0, relheight=0.04)
+
+    def _on_seek(val: str) -> None:
+        total = _live_video_total_ref[0]
+        target = int(float(val) * max(total - 1, 1))
+        _live_video_seek_to[0] = target
+        _live_video_seeking[0] = True
+        # Hold the "seeking" flag briefly so the thread doesn't immediately
+        # overwrite the slider position before the seek has been processed.
+        root.after(400, lambda: _live_video_seeking.__setitem__(0, False))
+
+    _live_video_seek_slider = ctk.CTkSlider(
+        seek_strip, from_=0.0, to=1.0, command=_on_seek,
+        height=20, progress_color="#4caf50", button_color="#a6e3a1",
+    )
+    _live_video_seek_slider.set(0)
+    _live_video_seek_slider.place(relx=0.01, rely=0.1, relwidth=0.98, relheight=0.8)
+
+    # ── Controls bar ──────────────────────────────────────────────────────
+    bar = ctk.CTkFrame(main_frame, corner_radius=0, fg_color="#1e1e2e")
+    bar.place(relx=0, rely=0.82, relwidth=1.0, relheight=0.18)
     _live_video_bar = bar
 
-    FONT = ("Segoe UI", 12)
-    _video_path_lbl = ctk.CTkLabel(bar, text="No video selected", font=("Segoe UI", 11),
-                                   text_color="gray", anchor="w")
-    _video_path_lbl.place(relx=0.01, rely=0.05, relwidth=0.52, relheight=0.45)
+    FONT = ("Segoe UI", 11)
 
-    _live_video_status_label = ctk.CTkLabel(bar, text="", font=("Segoe UI", 11),
-                                            text_color="#a6adc8", anchor="w")
-    _live_video_status_label.place(relx=0.01, rely=0.55, relwidth=0.52, relheight=0.42)
+    # Info labels (top row)
+    _video_path_lbl = ctk.CTkLabel(
+        bar, text="No video selected", font=FONT, text_color="gray", anchor="w",
+    )
+    _video_path_lbl.place(relx=0.01, rely=0.04, relwidth=0.48, relheight=0.28)
 
+    _live_video_status_label = ctk.CTkLabel(
+        bar, text="", font=FONT, text_color="#a6adc8", anchor="w",
+    )
+    _live_video_status_label.place(relx=0.01, rely=0.34, relwidth=0.48, relheight=0.28)
+
+    # ── Half precision (FP16) ──────────────────────────────────────────────
+    _live_video_half_var = ctk.BooleanVar(value=False)
+    half_chk = ctk.CTkCheckBox(
+        bar, text="FP16", variable=_live_video_half_var, font=FONT,
+    )
+    half_chk.place(relx=0.01, rely=0.64, relwidth=0.07, relheight=0.30)
+    Tooltip(half_chk, "Run inference in half-precision (FP16) for ~2× speed on NVIDIA GPUs.")
+
+    # ── Confidence threshold ───────────────────────────────────────────────
+    _live_video_conf_var = ctk.DoubleVar(value=0.5)
+    conf_lbl = ctk.CTkLabel(bar, text="Conf:", font=FONT, anchor="w")
+    conf_lbl.place(relx=0.09, rely=0.64, relwidth=0.05, relheight=0.30)
+    conf_slider = ctk.CTkSlider(
+        bar, from_=0.01, to=1.0, variable=_live_video_conf_var,
+        number_of_steps=99, width=80,
+    )
+    conf_slider.place(relx=0.14, rely=0.68, relwidth=0.10, relheight=0.25)
+    conf_val_lbl = ctk.CTkLabel(bar, text="0.50", font=FONT, anchor="w")
+    conf_val_lbl.place(relx=0.25, rely=0.64, relwidth=0.05, relheight=0.30)
+    _live_video_conf_var.trace_add(
+        "write",
+        lambda *_: conf_val_lbl.configure(text=f"{_live_video_conf_var.get():.2f}"),
+    )
+    Tooltip(conf_slider, "Minimum confidence for detections to be shown.")
+
+    # ── Buttons (right half) ───────────────────────────────────────────────
     def _pick_video():
         global _live_video_path
         p = normalize_path(
@@ -1126,15 +1212,100 @@ def show_live_video_window() -> None:
             _live_video_path = p
             _video_path_lbl.configure(text=Path(p).name, text_color="#4caf50")
 
-    vid_btn = ctk.CTkButton(bar, text="📂  Select Video", command=_pick_video,
-                             font=FONT, height=34)
-    vid_btn.place(relx=0.55, rely=0.1, relwidth=0.14, relheight=0.8)
-    Tooltip(vid_btn, "Choose a local video file to play back with live YOLO detection overlay.")
+    def _pick_model():
+        global detection_model_path
+        p = normalize_path(
+            filedialog.askopenfilename(
+                title="Select YOLO Model",
+                filetypes=[
+                    ("YOLO model", "*.pt *.onnx *.engine"),
+                    ("All files", "*.*"),
+                ],
+            )
+        )
+        if p:
+            detection_model_path = p
+            _safe_label_configure(
+                _live_video_status_label,
+                text=f"Model: {Path(p).name}",
+                text_color="#64b5f6",
+            )
 
-    model_btn = ctk.CTkButton(bar, text="🤖  Select Model",
-                               command=select_detection_model, font=FONT, height=34)
-    model_btn.place(relx=0.71, rely=0.1, relwidth=0.13, relheight=0.8)
-    Tooltip(model_btn, "Choose the YOLO .pt model used for detection on the video frames.")
+    vid_btn = ctk.CTkButton(bar, text="📂 Video", command=_pick_video, font=FONT, height=28)
+    vid_btn.place(relx=0.51, rely=0.06, relwidth=0.09, relheight=0.38)
+    Tooltip(vid_btn, "Choose a local video file for detection playback.")
+
+    model_btn = ctk.CTkButton(bar, text="🤖 Model", command=_pick_model, font=FONT, height=28)
+    model_btn.place(relx=0.61, rely=0.06, relwidth=0.09, relheight=0.38)
+    Tooltip(model_btn, "Choose a YOLO model (.pt, .onnx, or .engine) for detection.")
+
+    def _toggle_pause():
+        global _live_video_paused
+        _live_video_paused = not _live_video_paused
+        if _live_video_pause_btn:
+            _live_video_pause_btn.configure(
+                text="▶ Resume" if _live_video_paused else "⏸ Pause",
+                fg_color="#e65100" if _live_video_paused else "#37474f",
+            )
+
+    _live_video_pause_btn = ctk.CTkButton(
+        bar, text="⏸ Pause", command=_toggle_pause,
+        fg_color="#37474f", hover_color="#263238",
+        font=FONT, height=28,
+    )
+    _live_video_pause_btn.place(relx=0.71, rely=0.06, relwidth=0.09, relheight=0.38)
+    Tooltip(_live_video_pause_btn, "Pause or resume video playback.")
+
+    def _screenshot_dialog():
+        if _live_video_raw_frame[0] is None:
+            messagebox.showinfo("Screenshot", "No frame available yet — start playback first.")
+            return
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        win = tk.Toplevel(root)
+        win.title("Save Screenshot")
+        win.geometry("300x130")
+        win.resizable(False, False)
+        win.configure(bg="#1e1e2e")
+        win.grab_set()
+        ctk.CTkLabel(win, text="Save screenshot as:", font=("Segoe UI", 12)).pack(pady=(14, 6))
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.pack(fill="x", padx=20)
+
+        def _save(with_boxes: bool):
+            win.destroy()
+            frame = _live_video_ann_frame[0] if with_boxes else _live_video_raw_frame[0]
+            if frame is None:
+                messagebox.showinfo("Screenshot", "Frame no longer available.")
+                return
+            suffix = "_detection" if with_boxes else "_raw"
+            fname = f"screenshot{suffix}_{ts}.png"
+            path = filedialog.asksaveasfilename(
+                defaultextension=".png",
+                filetypes=[("PNG image", "*.png"), ("JPEG image", "*.jpg"), ("All files", "*.*")],
+                initialfile=fname,
+            )
+            if path:
+                cv2.imwrite(path, frame)
+                messagebox.showinfo("Screenshot saved", f"Saved to:\n{path}")
+
+        ctk.CTkButton(
+            btn_row, text="With Detections", fg_color="#1565c0",
+            font=("Segoe UI", 11), height=32,
+            command=lambda: _save(True),
+        ).pack(side="left", expand=True, fill="x", padx=(0, 4))
+        ctk.CTkButton(
+            btn_row, text="Raw Frame", fg_color="#37474f",
+            font=("Segoe UI", 11), height=32,
+            command=lambda: _save(False),
+        ).pack(side="left", expand=True, fill="x", padx=(4, 0))
+
+    shot_btn = ctk.CTkButton(
+        bar, text="📷 Screenshot", command=_screenshot_dialog,
+        fg_color="#37474f", hover_color="#263238",
+        font=FONT, height=28,
+    )
+    shot_btn.place(relx=0.81, rely=0.06, relwidth=0.09, relheight=0.38)
+    Tooltip(shot_btn, "Save the current frame as a PNG — choose with or without detection boxes.")
 
     def _toggle():
         global _live_video_running
@@ -1147,47 +1318,92 @@ def show_live_video_window() -> None:
         bar, text="▶  PLAY",
         command=_toggle,
         fg_color="#2e7d32", hover_color="#1b5e20",
-        font=("Segoe UI", 14, "bold"), height=34, text_color="white",
+        font=("Segoe UI", 13, "bold"), height=28, text_color="white",
     )
-    _live_video_start_btn.place(relx=0.86, rely=0.1, relwidth=0.13, relheight=0.8)
+    _live_video_start_btn.place(relx=0.91, rely=0.06, relwidth=0.08, relheight=0.38)
     bar._start_btn = _live_video_start_btn
+
+    # Second row of buttons
+    ctk.CTkLabel(bar, text="Seek:", font=FONT, text_color="gray").place(
+        relx=0.51, rely=0.56, relwidth=0.04, relheight=0.30
+    )
+
+    def _jump(delta_sec: float) -> None:
+        fps = _live_video_fps_ref[0]
+        cur = _live_video_frame_ref[0]
+        total = _live_video_total_ref[0]
+        target = max(0, min(total - 1, cur + int(delta_sec * fps)))
+        _live_video_seek_to[0] = target
+
+    # Jump buttons: (delta_seconds, label, relative_x_position)
+    for delta_seconds, button_label, rel_x_pos in [
+        (-10, "−10s", 0.56), (-5, "−5s", 0.62),
+        (+5, "+5s",   0.68), (+10, "+10s", 0.74),
+    ]:
+        ctk.CTkButton(
+            bar, text=button_label, command=lambda d=delta_seconds: _jump(d),
+            fg_color="#37474f", hover_color="#263238",
+            font=("Segoe UI", 10), height=24,
+        ).place(relx=rel_x_pos, rely=0.56, relwidth=0.055, relheight=0.34)
 
 
 def _start_live_video() -> None:
-    global _live_video_running, _live_video_cancel_flag
+    global _live_video_running, _live_video_cancel_flag, _live_video_paused
 
     if not _live_video_path:
         messagebox.showerror("Error", "Please select a video file first.")
         return
     if not detection_model_path:
-        messagebox.showerror("Error", "Please select a YOLO model (.pt) first.")
+        messagebox.showerror("Error", "Please select a YOLO model (.pt / .onnx / .engine) first.")
         return
 
     _live_video_running = True
+    _live_video_paused = False
     _live_video_cancel_flag[0] = False
+    _live_video_seek_to[0] = -1
+    _live_video_frame_ref[0] = 0
+    _live_video_total_ref[0] = 1
+    _live_video_fps_ref[0] = 25.0
 
     if _live_video_start_btn:
         _live_video_start_btn.configure(
             text="■  STOP", fg_color="#c62828", hover_color="#b71c1c",
         )
+    if _live_video_pause_btn:
+        _live_video_pause_btn.configure(text="⏸ Pause", fg_color="#37474f")
+    if _live_video_seek_slider:
+        _live_video_seek_slider.set(0)
 
     threading.Thread(target=_live_video_thread, daemon=True).start()
 
 
 def _stop_live_video() -> None:
-    global _live_video_running
+    global _live_video_running, _live_video_paused
     _live_video_running = False
+    _live_video_paused = False
     _live_video_cancel_flag[0] = True
     if _live_video_start_btn:
-        _live_video_start_btn.configure(
-            text="▶  PLAY", fg_color="#2e7d32", hover_color="#1b5e20",
-        )
+        try:
+            _live_video_start_btn.configure(
+                text="▶  PLAY", fg_color="#2e7d32", hover_color="#1b5e20",
+            )
+        except Exception:
+            pass
+    if _live_video_pause_btn:
+        try:
+            _live_video_pause_btn.configure(text="⏸ Pause", fg_color="#37474f")
+        except Exception:
+            pass
 
 
 def _live_video_thread() -> None:
     """Background thread: open video, run YOLO frame-by-frame, display in label."""
     try:
         from ultralytics import YOLO as _YOLO
+
+        half = _live_video_half_var.get() if _live_video_half_var else False
+        conf = _live_video_conf_var.get() if _live_video_conf_var else 0.5
+
         model = _YOLO(detection_model_path)
 
         cap = cv2.VideoCapture(_live_video_path)
@@ -1197,28 +1413,52 @@ def _live_video_thread() -> None:
             return
 
         total_frames = max(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), 1)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 25
-        delay = max(1, int(1000 / fps))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        _live_video_total_ref[0] = total_frames
+        _live_video_fps_ref[0] = fps
+
+        frame_delay = max(0.001, 1.0 / fps)
         frame_idx = 0
 
         while not _live_video_cancel_flag[0]:
+            # ── Handle pending seek ────────────────────────────────────────
+            seek_target = _live_video_seek_to[0]
+            if seek_target >= 0:
+                frame_idx = max(0, min(seek_target, total_frames - 1))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                _live_video_seek_to[0] = -1
+
+            # ── Pause ─────────────────────────────────────────────────────
+            if _live_video_paused:
+                time.sleep(0.05)
+                continue
+
+            t_start = time.perf_counter()
+
             ret, frame = cap.read()
             if not ret:
-                break  # video ended – stop
+                break  # end of video
 
-            results = model.predict(frame, save=False, conf=0.5, verbose=False)
+            # Copy frames for screenshot use: the UI thread may read these at any
+            # time, so we must not hand over a reference that the loop will mutate.
+            _live_video_raw_frame[0] = frame.copy()
+
+            results = model.predict(frame, save=False, conf=conf, half=half, verbose=False)
             annotated = results[0].plot()
+            _live_video_ann_frame[0] = annotated  # .plot() already returns a new array
 
+            # Update shared state
+            _live_video_frame_ref[0] = frame_idx
+            frac = frame_idx / total_frames
+
+            # Prepare display image
             img_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
             pil_img = Image.fromarray(img_rgb)
-
-            # Resize to fit label
             try:
                 lw = max(_live_video_label.winfo_width(),  1)
                 lh = max(_live_video_label.winfo_height(), 1)
             except Exception:
                 lw, lh = 1280, 720
-
             scale = min(lw / pil_img.width, lh / pil_img.height)
             nw = max(1, int(pil_img.width  * scale))
             nh = max(1, int(pil_img.height * scale))
@@ -1226,10 +1466,12 @@ def _live_video_thread() -> None:
             photo = ImageTk.PhotoImage(pil_img)
 
             det_count = len(results[0].boxes)
-            pct = frame_idx / total_frames * 100
-            status = f"Frame {frame_idx}/{total_frames}  ({pct:.0f}%)  |  {det_count} detection(s)"
+            status = (
+                f"Frame {frame_idx}/{total_frames}  ({frac * 100:.0f}%)  "
+                f"|  {det_count} detection(s)"
+            )
 
-            def _update(ph=photo, st=status):
+            def _update(ph=photo, st=status, f=frac):
                 if _live_video_label:
                     try:
                         _live_video_label.config(image=ph)
@@ -1237,12 +1479,20 @@ def _live_video_thread() -> None:
                     except Exception:
                         pass
                 _safe_label_configure(_live_video_status_label, text=st)
+                # Update seek slider without triggering seek command
+                if _live_video_seek_slider and not _live_video_seeking[0]:
+                    try:
+                        _live_video_seek_slider.set(f)
+                    except Exception:
+                        pass
 
             root.after(0, _update)
             frame_idx += 1
 
-            import time
-            time.sleep(max(0.001, delay / 1000 - 0.01))
+            # Throttle to video fps
+            elapsed = time.perf_counter() - t_start
+            sleep_t = max(0.001, frame_delay - elapsed)
+            time.sleep(sleep_t)
 
         cap.release()
     except Exception as exc:
@@ -1256,6 +1506,15 @@ def _live_video_thread() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 #  Export window
 # ─────────────────────────────────────────────────────────────────────────────
+def _append_export_log(textbox, msg: str) -> None:
+    try:
+        if textbox and textbox.winfo_exists():
+            textbox.insert("end", msg)
+            textbox.yview_moveto(1)
+    except Exception:
+        pass
+
+
 def show_export_window() -> None:
     global export_model_label, export_status_label, export_model_path
     export_model_path = ""
@@ -1263,35 +1522,50 @@ def show_export_window() -> None:
     FLAB = ("Segoe UI", 13)
     FBTN = ("Segoe UI", 13)
 
-    ctk.CTkLabel(
-        main_frame, text="Export Trained Model",
-        font=("Segoe UI", 20, "bold"),
-    ).place(relx=0.5, rely=0.06, anchor="center")
+    # ── Left: configuration panel ─────────────────────────────────────────
+    cfg = ctk.CTkScrollableFrame(
+        main_frame,
+        label_text="Export Configuration",
+        label_font=("Segoe UI", 14, "bold"),
+        corner_radius=8,
+    )
+    cfg.place(relx=0, rely=0, relwidth=0.42, relheight=1.0)
 
-    ctk.CTkLabel(main_frame, text="Trained model (.pt)", font=FLAB).place(
-        relx=0.25, rely=0.14, anchor="center"
-    )
-    sel_btn = ctk.CTkButton(
-        main_frame, text="Browse .pt…", font=FBTN, height=38,
-        command=select_export_model,
-    )
-    sel_btn.place(relx=0.25, rely=0.21, anchor="center", relwidth=0.30)
+    # ── Right: output log ─────────────────────────────────────────────────
+    log_panel = ctk.CTkFrame(main_frame, corner_radius=8)
+    log_panel.place(relx=0.43, rely=0, relwidth=0.57, relheight=1.0)
+
+    PAD = {"padx": 14, "pady": 6}
+
+    def _lbl(text):
+        l = ctk.CTkLabel(cfg, text=text, font=FLAB, anchor="w")
+        l.pack(fill="x", padx=14, pady=(10, 1))
+        return l
+
+    def _sep():
+        ctk.CTkFrame(cfg, height=1, fg_color="gray50").pack(fill="x", padx=14, pady=4)
+
+    # ── Model selection ────────────────────────────────────────────────────
+    _lbl("Trained Model (.pt)")
+    sel_btn = ctk.CTkButton(cfg, text="Browse .pt…", font=FBTN, height=38,
+                             command=select_export_model)
+    sel_btn.pack(fill="x", **PAD)
     Tooltip(sel_btn, "Select the trained YOLO .pt model you want to export.")
 
     export_model_label = ctk.CTkLabel(
-        main_frame, text="No model selected", font=("Segoe UI", 11), text_color="gray",
+        cfg, text="No model selected", font=("Segoe UI", 11), text_color="gray", anchor="w",
     )
-    export_model_label.place(relx=0.25, rely=0.28, anchor="center", relwidth=0.42)
+    export_model_label.pack(fill="x", padx=14)
+    _sep()
 
-    ctk.CTkLabel(main_frame, text="Export Format", font=FLAB).place(
-        relx=0.25, rely=0.36, anchor="center"
-    )
+    # ── Export format ──────────────────────────────────────────────────────
+    _lbl("Export Format")
     export_fmt_var = ctk.StringVar(value=EXPORT_FORMATS[0])
     fmt_menu = ctk.CTkOptionMenu(
-        main_frame, variable=export_fmt_var, values=EXPORT_FORMATS,
+        cfg, variable=export_fmt_var, values=EXPORT_FORMATS,
         font=FBTN, height=38,
     )
-    fmt_menu.place(relx=0.25, rely=0.43, anchor="center", relwidth=0.30)
+    fmt_menu.pack(fill="x", **PAD)
     Tooltip(
         fmt_menu,
         "ONNX            – universal format; runs on CPU, GPU, or accelerators.\n"
@@ -1300,38 +1574,129 @@ def show_export_window() -> None:
         "TF SavedModel   – TensorFlow ecosystem.\n"
         "TFLite          – mobile / embedded TensorFlow.",
     )
+    _sep()
 
-    _trt_note = (
-        "ℹ️  TensorRT notes\n\n"
-        "Exporting to a TensorRT .engine file compiles the model into GPU-specific\n"
-        "machine code for maximum inference speed on NVIDIA hardware.\n\n"
-        "Requirements:\n"
-        "  • NVIDIA GPU with CUDA ≥ 11\n"
-        "  • TensorRT ≥ 8  (pip install tensorrt)\n"
-        "  • The .engine file is bound to the GPU it was built on.\n\n"
-        "This is an inference-optimisation step, NOT a training format."
-    )
+    # ── TensorRT note ──────────────────────────────────────────────────────
+    _lbl("ℹ️  Format Notes")
     note_box = ctk.CTkTextbox(
-        main_frame, font=("Segoe UI", 11), height=145,
+        cfg, font=("Segoe UI", 11), height=160,
         fg_color="#2d2d1e", text_color="#e8e8b0", corner_radius=8,
     )
-    note_box.place(relx=0.68, rely=0.38, anchor="center", relwidth=0.54)
-    note_box.insert("1.0", _trt_note)
+    note_box.pack(fill="x", **PAD)
+    note_box.insert("1.0",
+        "ONNX\n"
+        "  Universal exchange format.  Runs on CPU, GPU, or hardware\n"
+        "  accelerators.  Supported by virtually every inference runtime.\n\n"
+        "TensorRT Engine\n"
+        "  Compiles the model into GPU-specific machine code for maximum\n"
+        "  speed on NVIDIA hardware.  The .engine file is bound to the GPU\n"
+        "  it was built on.  Requires TensorRT ≥ 8 (pip install tensorrt).\n\n"
+        "CoreML / TFLite\n"
+        "  Target Apple or mobile/embedded TensorFlow deployments."
+    )
     note_box.configure(state="disabled")
+    _sep()
 
-    ctk.CTkButton(
-        main_frame,
+    # ── Export button ──────────────────────────────────────────────────────
+    export_status_label = ctk.CTkLabel(
+        cfg, text="", font=("Segoe UI", 11), text_color="gray",
+        anchor="w", wraplength=260,
+    )
+    export_status_label.pack(fill="x", padx=14)
+
+    export_btn = ctk.CTkButton(
+        cfg,
         text="⬇  Export Model",
-        command=lambda: export_model(export_fmt_var.get()),
         fg_color="#6a1b9a", hover_color="#4a148c",
         font=("Segoe UI", 15, "bold"), height=50,
         text_color="white", corner_radius=8,
-    ).place(relx=0.25, rely=0.58, anchor="center", relwidth=0.32)
-
-    export_status_label = ctk.CTkLabel(
-        main_frame, text="", font=("Segoe UI", 12), wraplength=600
     )
-    export_status_label.place(relx=0.5, rely=0.72, anchor="center", relwidth=0.85)
+    export_btn.pack(fill="x", **PAD)
+
+    # ── Log panel ──────────────────────────────────────────────────────────
+    ctk.CTkLabel(
+        log_panel, text="Export Output", font=("Segoe UI", 14, "bold"),
+    ).pack(anchor="w", padx=12, pady=(10, 4))
+
+    export_log_tb = ctk.CTkTextbox(
+        log_panel, font=("Courier New", 11), corner_radius=8,
+    )
+    export_log_tb.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+
+    export_log_bar = ctk.CTkProgressBar(
+        log_panel, progress_color="#6a1b9a", mode="indeterminate",
+    )
+    export_log_bar.pack(fill="x", padx=12, pady=(0, 10))
+    export_log_bar.set(0)
+
+    def _do_export():
+        fmt_display = export_fmt_var.get()
+        if not export_model_path:
+            messagebox.showerror("Error", "Please select a trained .pt model to export.")
+            return
+
+        fmt = EXPORT_FORMAT_MAP.get(fmt_display, "onnx")
+        export_btn.configure(state="disabled", text="⏳  Exporting…")
+        _safe_label_configure(export_status_label, text="Exporting…", text_color="#64b5f6")
+
+        # Clear log
+        try:
+            export_log_tb.delete("1.0", "end")
+        except Exception:
+            pass
+
+        export_log_bar.start()
+        _append_export_log(export_log_tb, f"Starting export: {Path(export_model_path).name}\n")
+        _append_export_log(export_log_tb, f"  Format : {fmt_display}  ({fmt})\n\n")
+
+        script = (
+            f"import sys; from ultralytics import YOLO; "
+            f"model = YOLO(r'{export_model_path}'); "
+            f"out = model.export(format='{fmt}'); "
+            f"print('EXPORT_OUTPUT:' + str(out))"
+        )
+        cmd = [sys.executable, "-c", script]
+
+        def run():
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            for raw_line in iter(proc.stdout.readline, ""):
+                line = _strip_ansi(raw_line)
+                if line.strip():
+                    root.after(0, lambda l=line: _append_export_log(export_log_tb, l))
+            proc.stdout.close()
+            proc.wait()
+
+            if proc.returncode == 0:
+                status_msg = "✅  Export finished successfully."
+                status_col = "#4caf50"
+                btn_text   = "⬇  Export Model"
+            else:
+                status_msg = f"❌  Export failed (exit code {proc.returncode})."
+                status_col = "#ef5350"
+                btn_text   = "⬇  Export Model"
+
+            def _done():
+                export_log_bar.stop()
+                export_log_bar.set(0)
+                _append_export_log(export_log_tb, f"\n{status_msg}\n")
+                _safe_label_configure(export_status_label, text=status_msg, text_color=status_col)
+                try:
+                    export_btn.configure(state="normal", text=btn_text)
+                except Exception:
+                    pass
+
+            root.after(0, _done)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    export_btn.configure(command=_do_export)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1834,7 +2199,96 @@ def _show_benchmark_results(metrics_list: list) -> None:
             "↑ higher is better   ↓ lower is better"
         ),
         font=("Segoe UI", 10), text_color="#6c7086",
-    ).pack(anchor="w", padx=16, pady=(2, 8))
+    ).pack(anchor="w", padx=16, pady=(2, 4))
+
+    # ── Chart button ────────────────────────────────────────────────────────
+    ok_metrics = [m for m in metrics_list if m.get("map50") is not None]
+    if ok_metrics:
+        ctk.CTkButton(
+            _benchmark_results_frame,
+            text="📊  Show Bar Charts",
+            fg_color="#1565c0", hover_color="#0d47a1",
+            font=("Segoe UI", 12, "bold"), height=34,
+            command=lambda: _show_benchmark_chart(metrics_list),
+        ).pack(anchor="w", padx=16, pady=(0, 10))
+
+
+def _show_benchmark_chart(metrics_list: list) -> None:
+    """Open a Toplevel window with bar charts for accuracy, speed, and model size."""
+    ok = [m for m in metrics_list if m.get("map50") is not None]
+    if not ok:
+        messagebox.showinfo("Chart", "No successful benchmark results to chart.")
+        return
+
+    try:
+        import matplotlib
+        matplotlib.use("TkAgg")
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+    except ImportError:
+        messagebox.showinfo(
+            "matplotlib not found",
+            "Install matplotlib to view charts:\n\n  pip install matplotlib\n\n"
+            "Then restart the application.",
+        )
+        return
+
+    win = tk.Toplevel(root)
+    win.title("Benchmark Charts")
+    win.geometry("960x540")
+    win.configure(bg="#1e1e2e")
+
+    names     = [m["name"][:18] for m in ok]
+    map50     = [m["map50"]    for m in ok]
+    speed     = [m["speed_ms"] for m in ok]
+    size_mb   = [m["size_mb"]  for m in ok]
+    map5095   = [m["map"]      for m in ok]
+
+    BG   = "#1e1e2e"
+    AXIS = "#2a2a3e"
+    TXT  = "white"
+    xs   = range(len(names))
+
+    fig = Figure(figsize=(9.6, 5.0), dpi=100, facecolor=BG)
+    fig.subplots_adjust(left=0.06, right=0.97, top=0.88, bottom=0.26, wspace=0.35)
+
+    axes_defs = [
+        (221, map50,   "#a6e3a1", "Accuracy (mAP50 ↑)"),
+        (222, map5095, "#89b4fa", "Fine Accuracy (mAP50-95 ↑)"),
+        (223, speed,   "#89dceb", "Speed (ms / img ↓)"),
+        (224, size_mb, "#cba6f7", "Model Size (MB)"),
+    ]
+
+    for pos, data, colour, title in axes_defs:
+        ax = fig.add_subplot(pos)
+        ax.set_facecolor(AXIS)
+        ax.tick_params(colors=TXT, labelsize=7)
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#45475a")
+        bars = ax.bar(xs, data, color=colour, zorder=2)
+        ax.set_xticks(list(xs))
+        ax.set_xticklabels(names, rotation=40, ha="right", fontsize=7, color=TXT)
+        ax.set_title(title, color=TXT, fontsize=9, pad=4)
+        ax.yaxis.label.set_color(TXT)
+        ax.title.set_color(TXT)
+        # Value labels on top of each bar
+        for bar, val in zip(bars, data):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height(),
+                f"{val:.2f}",
+                ha="center", va="bottom",
+                fontsize=6, color=TXT,
+            )
+
+    canvas = FigureCanvasTkAgg(fig, master=win)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill="both", expand=True, padx=6, pady=6)
+
+    tb_frame = ctk.CTkFrame(win, fg_color="#1e1e2e", height=32)
+    tb_frame.pack(fill="x")
+    tb = NavigationToolbar2Tk(canvas, tb_frame)
+    tb.update()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2081,7 +2535,6 @@ def _run_training_subprocess(
     yaml_path: str, selected_model_size: str, workers_int: int = 8
 ) -> None:
     global progress_bar, output_textbox
-    import re
 
     cmd = [
         sys.executable, "src/train.py",
@@ -2128,8 +2581,11 @@ def _run_training_subprocess(
         )
 
         def _reader():
-            for line in iter(proc.stdout.readline, ""):
-                output_queue.put(line)
+            for raw_line in iter(proc.stdout.readline, ""):
+                line = _strip_ansi(raw_line)
+                # Skip lines that were purely escape sequences
+                if line.strip():
+                    output_queue.put(line)
                 m = epoch_re.match(line)
                 if m:
                     ep_cur = int(m.group(1))
@@ -2523,17 +2979,17 @@ def _run_training_queue() -> None:
                     str(batch_size),
                     custom_model_path,
                 ]
-                import re
                 epoch_re = re.compile(r'^\s*(\d+)/(\d+)\s')
-                total_ep = int(epochs) if str(epochs).isdigit() else 1
 
                 proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, encoding="utf-8", errors="replace",
                 )
-                for line in iter(proc.stdout.readline, ""):
-                    output_queue.put(line)
+                for raw_line in iter(proc.stdout.readline, ""):
+                    line = _strip_ansi(raw_line)
+                    if line.strip():
+                        output_queue.put(line)
                     m = epoch_re.match(line)
                     if m:
                         ep_cur, ep_tot = int(m.group(1)), int(m.group(2))
@@ -2636,44 +3092,6 @@ def save_callback() -> None:
         if detection_save_dir:
             camera_detection.set_save_directory(detection_save_dir)
         camera_detection.capture_frame()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Export logic
-# ─────────────────────────────────────────────────────────────────────────────
-def export_model(format_display: str) -> None:
-    global export_status_label, export_model_path
-
-    if not export_model_path:
-        messagebox.showerror("Error", "Please select a trained .pt model to export.")
-        return
-
-    fmt = EXPORT_FORMAT_MAP.get(format_display, "onnx")
-    _safe_label_configure(
-        export_status_label,
-        text=f"Exporting to {format_display}…  please wait.",
-        text_color="#64b5f6",
-    )
-    root.update()
-
-    def do_export() -> None:
-        try:
-            from ultralytics import YOLO
-            model = YOLO(export_model_path)
-            out = model.export(format=fmt)
-            msg = f"✅ Export successful →  {out}"
-            root.after(
-                0,
-                lambda: _safe_label_configure(export_status_label, text=msg, text_color="#4caf50"),
-            )
-        except Exception as exc:
-            err = f"❌ Export failed: {exc}"
-            root.after(
-                0,
-                lambda: _safe_label_configure(export_status_label, text=err, text_color="#ef5350"),
-            )
-
-    threading.Thread(target=do_export, daemon=True).start()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
