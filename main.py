@@ -1,4 +1,5 @@
-# version 1.0.0 – modernised UI, bug-fixed, segmentation models, custom model loader, TensorRT export
+# version 2.0.0 – benchmark tab, Roboflow ZIP import, segmentation models,
+#                  custom model loader, TensorRT export, tooltips
 
 import os
 import sys
@@ -28,7 +29,7 @@ class Tooltip:
     def __init__(self, widget, text: str) -> None:
         self.widget = widget
         self.text = text
-        self._tip: tk.Toplevel | None = None
+        self._tip = None
         widget.bind("<Enter>", self._show)
         widget.bind("<Leave>", self._hide)
 
@@ -49,7 +50,7 @@ class Tooltip:
             relief=tk.SOLID,
             borderwidth=1,
             font=("Segoe UI", 10),
-            wraplength=340,
+            wraplength=360,
             padx=7,
             pady=5,
         ).pack()
@@ -63,7 +64,7 @@ class Tooltip:
 # ─────────────────────────────────────────────────────────────────────────────
 #  Utilities
 # ─────────────────────────────────────────────────────────────────────────────
-def get_screen_size() -> tuple[int, int]:
+def get_screen_size():
     """Return (width, height) of the primary monitor.  Cross-platform."""
     try:
         if sys.platform == "win32":
@@ -106,7 +107,7 @@ def _safe_label_configure(label, **kwargs) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 #  Model catalogue
 # ─────────────────────────────────────────────────────────────────────────────
-DETECTION_MODELS: list[str] = [
+DETECTION_MODELS = [
     "YOLOv8-Nano",      "YOLOv8-Small",     "YOLOv8-Medium",
     "YOLOv8-Large",     "YOLOv8-ExtraLarge",
     "YOLOv9-Compact",   "YOLOv9-Enhanced",
@@ -118,14 +119,14 @@ DETECTION_MODELS: list[str] = [
     "YOLOv12-Large",    "YOLOv12-ExtraLarge",
 ]
 
-SEGMENTATION_MODELS: list[str] = [
+SEGMENTATION_MODELS = [
     "YOLOv8-Nano-Seg",       "YOLOv8-Small-Seg",      "YOLOv8-Medium-Seg",
     "YOLOv8-Large-Seg",      "YOLOv8-ExtraLarge-Seg",
     "YOLOv11-Nano-Seg",      "YOLOv11-Small-Seg",     "YOLOv11-Medium-Seg",
     "YOLOv11-Large-Seg",     "YOLOv11-ExtraLarge-Seg",
 ]
 
-MODEL_MAP: dict[str, str] = {
+MODEL_MAP = {
     # Detection
     "YOLOv8-Nano":       "yolov8n",   "YOLOv8-Small":       "yolov8s",
     "YOLOv8-Medium":     "yolov8m",   "YOLOv8-Large":       "yolov8l",
@@ -149,34 +150,35 @@ MODEL_MAP: dict[str, str] = {
     "YOLOv11-ExtraLarge-Seg": "yolo11x-seg",
 }
 
-EXPORT_FORMATS: list[str] = ["ONNX", "TensorRT Engine", "CoreML", "TF SavedModel", "TFLite"]
-EXPORT_FORMAT_MAP: dict[str, str] = {
-    "ONNX":          "onnx",
+EXPORT_FORMATS = ["ONNX", "TensorRT Engine", "CoreML", "TF SavedModel", "TFLite"]
+EXPORT_FORMAT_MAP = {
+    "ONNX":            "onnx",
     "TensorRT Engine": "engine",
-    "CoreML":        "coreml",
-    "TF SavedModel": "saved_model",
-    "TFLite":        "tflite",
+    "CoreML":          "coreml",
+    "TF SavedModel":   "saved_model",
+    "TFLite":          "tflite",
 }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Global application state
 # ─────────────────────────────────────────────────────────────────────────────
-project_name:              str = ""
-train_data_path:           str = ""
-model_save_path:           str = ""
-custom_model_path:         str = ""   # optional .pt for training base
-input_size:                str = ""
-epochs:                    str = ""
-batch_size:                str = ""
-class_names:               list[str] = []
-image_paths:               list[str] = []
-current_image_index:       int = 0
-detection_model_path:      str = ""
-detection_images_folder_path: str = ""
-detection_save_dir:        str = ""
-export_model_path:         str = ""
-camera_detection:          CameraDetection | None = None
+project_name                 = ""
+train_data_path              = ""
+model_save_path              = ""
+custom_model_path            = ""    # optional .pt for training base
+roboflow_yaml_path           = ""    # set when a Roboflow ZIP is imported
+input_size                   = ""
+epochs                       = ""
+batch_size                   = ""
+class_names                  = []
+image_paths                  = []
+current_image_index          = 0
+detection_model_path         = ""
+detection_images_folder_path = ""
+detection_save_dir           = ""
+export_model_path            = ""
+camera_detection             = None
 
 # Widget references populated inside show_* functions
 output_textbox         = None
@@ -187,18 +189,25 @@ image_index_label      = None
 selected_model_var     = None   # StringVar for model dropdown
 task_type_var          = None   # StringVar "Detection" / "Segmentation"
 model_menu_widget      = None   # CTkOptionMenu reference
-_camera_bar            = None   # bottom bar in camera view (holds start/stop btn)
+_camera_bar            = None   # bottom bar in camera view
+camera_id_entry        = None
 
 # Status labels (set inside each show_* function, None when not visible)
-train_data_label  = None
-model_save_label  = None
-custom_model_label = None
+train_data_label    = None
+model_save_label    = None
+custom_model_label  = None
 detect_folder_label = None
 detect_model_label  = None
 export_model_label  = None
 export_status_label = None
 
-output_queue: Queue = Queue()
+# Benchmark state
+_benchmark_models           = []   # list of .pt paths added by user
+_benchmark_results_frame    = None
+_benchmark_run_btn          = None
+_benchmark_model_list_frame = None
+
+output_queue = Queue()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -265,13 +274,13 @@ def show_prev_image() -> None:
 #  Sidebar navigation
 # ─────────────────────────────────────────────────────────────────────────────
 def on_sidebar_select(key: str) -> None:
-    # Reset all shared label references before building a new view
     global train_data_label, model_save_label, custom_model_label
     global detect_folder_label, detect_model_label
     global export_model_label, export_status_label
     global output_textbox, progress_bar, detection_progress_bar
     global image_label, image_index_label, model_menu_widget
     global selected_model_var, task_type_var, _camera_bar
+    global _benchmark_results_frame, _benchmark_run_btn, _benchmark_model_list_frame
 
     clear_frame(main_frame)
 
@@ -281,6 +290,9 @@ def on_sidebar_select(key: str) -> None:
     image_label = image_index_label = None
     model_menu_widget = None
     _camera_bar = None
+    _benchmark_results_frame = None
+    _benchmark_run_btn = None
+    _benchmark_model_list_frame = None
 
     if key == "Train":
         show_ai_train_window()
@@ -290,13 +302,14 @@ def on_sidebar_select(key: str) -> None:
         show_camera_detection_window()
     elif key == "Export":
         show_export_window()
+    elif key == "Benchmark":
+        show_benchmark_window()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Train window
 # ─────────────────────────────────────────────────────────────────────────────
 def _on_task_type_change(*_args) -> None:
-    """Repopulate the model dropdown when the task type changes."""
     global model_menu_widget, selected_model_var, task_type_var
     if task_type_var is None or model_menu_widget is None:
         return
@@ -309,7 +322,7 @@ def show_ai_train_window() -> None:
     global output_textbox, progress_bar, selected_model_var, task_type_var, model_menu_widget
     global train_data_label, model_save_label, custom_model_label
 
-    # ── Left: scrollable configuration panel ─────────────────────────────
+    # ── Left: scrollable configuration panel ──────────────────────────────
     config_panel = ctk.CTkScrollableFrame(
         master=main_frame,
         label_text="Training Configuration",
@@ -318,7 +331,7 @@ def show_ai_train_window() -> None:
     )
     config_panel.place(relx=0, rely=0, relwidth=0.41, relheight=1.0)
 
-    # ── Right: log / output panel ─────────────────────────────────────────
+    # ── Right: log / output panel ──────────────────────────────────────────
     log_panel = ctk.CTkFrame(master=main_frame, corner_radius=8)
     log_panel.place(relx=0.42, rely=0, relwidth=0.58, relheight=1.0)
 
@@ -337,7 +350,104 @@ def show_ai_train_window() -> None:
             fill="x", padx=14, pady=4
         )
 
-    # ── Project name ──────────────────────────────────────────────────────
+    # ── Roboflow ZIP import ────────────────────────────────────────────────
+    _lbl("📦  Import Roboflow Dataset  (optional)")
+
+    _rf_status_label = ctk.CTkLabel(
+        config_panel, text="No Roboflow dataset loaded",
+        font=("Segoe UI", 11), text_color="gray", anchor="w",
+    )
+
+    def _do_roboflow_import():
+        global train_data_path, roboflow_yaml_path, train_data_label
+
+        zip_path = filedialog.askopenfilename(
+            title="Select Roboflow Dataset ZIP",
+            filetypes=[("ZIP archive", "*.zip"), ("All files", "*.*")],
+        )
+        if not zip_path:
+            return
+
+        extract_dir = filedialog.askdirectory(
+            title="Choose folder to extract dataset into"
+        )
+        if not extract_dir:
+            return
+
+        _safe_label_configure(_rf_status_label, text="⏳ Extracting…", text_color="#64b5f6")
+        config_panel.update_idletasks()
+
+        try:
+            from src.dataset import extract_roboflow_zip, count_dataset_images
+            root_path, yaml, names = extract_roboflow_zip(zip_path, extract_dir)
+        except Exception as exc:
+            messagebox.showerror("Import Error", f"Failed to extract ZIP:\n{exc}")
+            _safe_label_configure(_rf_status_label, text="Import failed.", text_color="#ef5350")
+            return
+
+        train_data_path    = root_path
+        roboflow_yaml_path = yaml
+
+        _safe_label_configure(train_data_label, text=Path(root_path).name, text_color="#64b5f6")
+
+        # Auto-fill class names textbox
+        class_names_text.delete("1.0", "end")
+        class_names_text.insert("1.0", "\n".join(names))
+
+        # Count images for a friendly status message
+        try:
+            from src.dataset import count_dataset_images
+            counts = count_dataset_images(root_path)
+            parts  = [f"{v} {k}" for k, v in counts.items()]
+            count_str = "  |  ".join(parts) if parts else "unknown"
+        except Exception:
+            count_str = "unknown"
+
+        status = f"✅  {Path(zip_path).stem}  •  {len(names)} classes  •  {count_str} images"
+        _safe_label_configure(_rf_status_label, text=status, text_color="#4caf50")
+
+        preview = ", ".join(names[:8]) + ("…" if len(names) > 8 else "")
+        messagebox.showinfo(
+            "Dataset Imported Successfully",
+            f"Roboflow dataset extracted to:\n{root_path}\n\n"
+            f"Classes ({len(names)}): {preview}\n\n"
+            f"Images: {count_str}\n\n"
+            "Class names have been filled in automatically.\n"
+            "Select a model, set epochs/batch, and click Start Training.",
+        )
+
+    def _clear_roboflow():
+        global roboflow_yaml_path
+        roboflow_yaml_path = ""
+        _safe_label_configure(
+            _rf_status_label, text="No Roboflow dataset loaded", text_color="gray"
+        )
+
+    rf_btn = ctk.CTkButton(
+        config_panel, text="📦  Import Roboflow ZIP…", font=FBTN, height=36,
+        command=_do_roboflow_import,
+    )
+    rf_btn.pack(fill="x", **PAD)
+    Tooltip(
+        rf_btn,
+        "Import a dataset downloaded from Roboflow in YOLOv8 format.\n\n"
+        "How to get one: roboflow.com → your project → Export → YOLOv8 → Download ZIP\n\n"
+        "Expected ZIP layout:\n"
+        "  train/images/*.jpg    train/labels/*.txt\n"
+        "  valid/images/*.jpg    valid/labels/*.txt\n"
+        "  test/images/*.jpg     test/labels/*.txt  (optional)\n"
+        "  data.yaml\n\n"
+        "The app will extract, patch paths, and fill in class names automatically.",
+    )
+    _rf_status_label.pack(fill="x", padx=14)
+    ctk.CTkButton(
+        config_panel, text="Clear imported dataset", font=("Segoe UI", 11),
+        height=28, fg_color="gray50", hover_color="gray35",
+        command=_clear_roboflow,
+    ).pack(fill="x", padx=14, pady=(2, 4))
+    _sep()
+
+    # ── Project name ───────────────────────────────────────────────────────
     _lbl("Project Name")
     project_name_entry = ctk.CTkEntry(
         config_panel, placeholder_text="e.g.  my_detector", font=FENT, height=36
@@ -345,12 +455,12 @@ def show_ai_train_window() -> None:
     project_name_entry.pack(fill="x", **PAD)
     Tooltip(
         project_name_entry,
-        "A short alphanumeric name for this run.\n"
-        "Training results and the YAML config are saved under this name.",
+        "A short alphanumeric name for this training run.\n"
+        "Results and the YAML config are saved under this name.",
     )
     _sep()
 
-    # ── Training data folder ──────────────────────────────────────────────
+    # ── Training data folder ───────────────────────────────────────────────
     _lbl("Training Data Folder")
     train_data_btn = ctk.CTkButton(
         config_panel, text="Browse…", font=FBTN, height=36, command=select_train_data
@@ -358,13 +468,13 @@ def show_ai_train_window() -> None:
     train_data_btn.pack(fill="x", **PAD)
     Tooltip(
         train_data_btn,
-        "Select a folder that contains paired image files and YOLO-format\n"
-        "annotation .txt files with the same base name.\n\n"
+        "Select a folder containing paired image + YOLO annotation (.txt) files.\n\n"
         "Expected layout:\n"
         "  folder/\n"
         "    photo1.jpg   photo1.txt\n"
         "    photo2.png   photo2.txt  …\n\n"
-        "The app will automatically split 80 % → train, 20 % → val.",
+        "The app will automatically split 80 % → train, 20 % → val.\n\n"
+        "If you imported a Roboflow ZIP above, this is set automatically.",
     )
     train_data_label = ctk.CTkLabel(
         config_panel, text="No folder selected", font=("Segoe UI", 11),
@@ -373,7 +483,7 @@ def show_ai_train_window() -> None:
     train_data_label.pack(fill="x", padx=14)
     _sep()
 
-    # ── Save folder ───────────────────────────────────────────────────────
+    # ── Save folder ────────────────────────────────────────────────────────
     _lbl("Model Save Folder")
     model_save_btn = ctk.CTkButton(
         config_panel, text="Browse…", font=FBTN, height=36, command=select_model_save_folder
@@ -387,32 +497,29 @@ def show_ai_train_window() -> None:
     model_save_label.pack(fill="x", padx=14)
     _sep()
 
-    # ── Task type ─────────────────────────────────────────────────────────
+    # ── Task type ──────────────────────────────────────────────────────────
     _lbl("Task Type")
     task_type_var = ctk.StringVar(value="Detection")
     task_frame = ctk.CTkFrame(config_panel, fg_color="transparent")
     task_frame.pack(fill="x", **PAD)
-    det_radio = ctk.CTkRadioButton(
+    ctk.CTkRadioButton(
         task_frame, text="Detection",
         variable=task_type_var, value="Detection",
         command=_on_task_type_change, font=FLAB,
-    )
-    det_radio.pack(side="left", padx=(0, 24))
-    seg_radio = ctk.CTkRadioButton(
+    ).pack(side="left", padx=(0, 24))
+    ctk.CTkRadioButton(
         task_frame, text="Segmentation",
         variable=task_type_var, value="Segmentation",
         command=_on_task_type_change, font=FLAB,
-    )
-    seg_radio.pack(side="left")
+    ).pack(side="left")
     Tooltip(
         task_frame,
-        "Detection  – predicts bounding boxes around objects.\n"
-        "Segmentation – predicts pixel-level instance masks.\n\n"
-        "Segmentation requires seg-compatible model weights and polygon\n"
-        "annotations in your dataset.",
+        "Detection     – predicts bounding boxes around objects.\n"
+        "Segmentation  – predicts pixel-level instance masks.\n\n"
+        "Segmentation requires polygon annotations in your dataset.",
     )
 
-    # ── YOLO model dropdown ───────────────────────────────────────────────
+    # ── YOLO model dropdown ────────────────────────────────────────────────
     _lbl("YOLO Model")
     selected_model_var = ctk.StringVar(value=DETECTION_MODELS[0])
     model_menu_widget = ctk.CTkOptionMenu(
@@ -430,18 +537,17 @@ def show_ai_train_window() -> None:
         "Nano / Small  – fastest, least accurate; ideal for edge devices.\n"
         "Medium        – balanced speed and accuracy.\n"
         "Large / ExtraLarge – most accurate; needs more GPU memory.\n\n"
-        "Segmentation variants require seg-format polygon annotations.",
+        "Segmentation variants require polygon annotations.",
     )
     _sep()
 
-    # ── Custom base model (optional) ──────────────────────────────────────
+    # ── Custom base model (optional) ───────────────────────────────────────
     _lbl("Custom Base Model  (optional)")
-    custom_model_btn = ctk.CTkButton(
+    ctk.CTkButton(
         config_panel, text="Browse .pt…", font=FBTN, height=36, command=select_custom_model
-    )
-    custom_model_btn.pack(fill="x", **PAD)
+    ).pack(fill="x", **PAD)
     Tooltip(
-        custom_model_btn,
+        config_panel.winfo_children()[-1],
         "Load your own .pt file as the training starting point.\n"
         "When set, this overrides the YOLO Model dropdown above.\n\n"
         "Useful for fine-tuning an already-trained custom model.",
@@ -451,15 +557,14 @@ def show_ai_train_window() -> None:
         font=("Segoe UI", 11), text_color="gray", anchor="w",
     )
     custom_model_label.pack(fill="x", padx=14)
-    clear_custom_btn = ctk.CTkButton(
+    ctk.CTkButton(
         config_panel, text="Clear custom model", font=("Segoe UI", 11),
         height=28, fg_color="gray50", hover_color="gray35",
         command=clear_custom_model,
-    )
-    clear_custom_btn.pack(fill="x", padx=14, pady=(2, 4))
+    ).pack(fill="x", padx=14, pady=(2, 4))
     _sep()
 
-    # ── Numeric training params ───────────────────────────────────────────
+    # ── Numeric training params ────────────────────────────────────────────
     _lbl("Image Size  (e.g. 640)")
     input_size_entry = ctk.CTkEntry(
         config_panel, placeholder_text="640", font=FENT, height=36
@@ -497,23 +602,24 @@ def show_ai_train_window() -> None:
     )
     _sep()
 
-    # ── Class names ───────────────────────────────────────────────────────
+    # ── Class names ────────────────────────────────────────────────────────
     _lbl("Class Names  (one per line)")
     class_names_text = ctk.CTkTextbox(config_panel, font=FENT, height=110)
     class_names_text.pack(fill="x", **PAD)
     Tooltip(
         class_names_text,
-        "Enter each object class on its own line, in the same order as the\n"
-        "class IDs used in your annotation .txt files.\n\n"
+        "Enter each object class on its own line, matching the class IDs\n"
+        "in your annotation .txt files (line 1 = class 0, etc.).\n\n"
         "Example:\n"
         "  cat\n"
         "  dog\n"
-        "  car",
+        "  car\n\n"
+        "If you imported a Roboflow ZIP, these are filled automatically.",
     )
     _sep()
 
-    # ── Start Training button ─────────────────────────────────────────────
-    start_btn = ctk.CTkButton(
+    # ── Start Training button ──────────────────────────────────────────────
+    ctk.CTkButton(
         config_panel,
         text="▶  Start Training",
         command=lambda: start_training(
@@ -526,10 +632,9 @@ def show_ai_train_window() -> None:
         height=50,
         text_color="white",
         corner_radius=8,
-    )
-    start_btn.pack(fill="x", padx=14, pady=12)
+    ).pack(fill="x", padx=14, pady=12)
 
-    # ── Log panel ─────────────────────────────────────────────────────────
+    # ── Log panel ──────────────────────────────────────────────────────────
     ctk.CTkLabel(
         log_panel, text="Training Output", font=("Segoe UI", 14, "bold")
     ).pack(anchor="w", padx=12, pady=(10, 4))
@@ -552,30 +657,24 @@ def show_image_detection_window() -> None:
     global image_label, detection_progress_bar, image_index_label
     global detect_folder_label, detect_model_label
 
-    # Image display
     image_label = tk.Label(main_frame, bg="#111827")
     image_label.place(relx=0, rely=0, relwidth=1.0, relheight=0.86)
 
-    # Bottom control bar
     bar = ctk.CTkFrame(main_frame, corner_radius=0, height=80)
     bar.place(relx=0, rely=0.87, relwidth=1.0, relheight=0.13)
 
     FONT = ("Segoe UI", 12)
 
-    # Status labels (row 1)
     detect_folder_label = ctk.CTkLabel(
-        bar, text="No folder selected", font=("Segoe UI", 11),
-        text_color="gray", anchor="w",
+        bar, text="No folder selected", font=("Segoe UI", 11), text_color="gray", anchor="w",
     )
     detect_folder_label.place(relx=0.01, rely=0.03, relwidth=0.46, relheight=0.38)
 
     detect_model_label = ctk.CTkLabel(
-        bar, text="No model selected", font=("Segoe UI", 11),
-        text_color="gray", anchor="w",
+        bar, text="No model selected", font=("Segoe UI", 11), text_color="gray", anchor="w",
     )
     detect_model_label.place(relx=0.50, rely=0.03, relwidth=0.48, relheight=0.38)
 
-    # Buttons (row 2)
     sel_folder_btn = ctk.CTkButton(
         bar, text="Select Images/Videos Folder",
         command=select_detection_images_folder, font=FONT, height=34,
@@ -590,25 +689,22 @@ def show_image_detection_window() -> None:
     sel_model_btn.place(relx=0.24, rely=0.48, relwidth=0.15, relheight=0.46)
     Tooltip(sel_model_btn, "Choose a trained YOLO .pt weights file for inference.")
 
-    start_det_btn = ctk.CTkButton(
+    ctk.CTkButton(
         bar, text="▶  Start Detection",
         command=lambda: [detection_progress_bar.start(), start_image_detection()],
         fg_color="#1565c0", hover_color="#0d47a1",
         font=("Segoe UI", 14, "bold"), height=34, text_color="white",
-    )
-    start_det_btn.place(relx=0.41, rely=0.48, relwidth=0.18, relheight=0.46)
+    ).place(relx=0.41, rely=0.48, relwidth=0.18, relheight=0.46)
 
-    prev_btn = ctk.CTkButton(
+    ctk.CTkButton(
         bar, text="◀", command=show_prev_image,
         fg_color="#1976d2", font=("Segoe UI", 20, "bold"), height=34,
-    )
-    prev_btn.place(relx=0.64, rely=0.48, relwidth=0.07, relheight=0.46)
+    ).place(relx=0.64, rely=0.48, relwidth=0.07, relheight=0.46)
 
-    next_btn = ctk.CTkButton(
+    ctk.CTkButton(
         bar, text="▶", command=show_next_image,
         fg_color="#1976d2", font=("Segoe UI", 20, "bold"), height=34,
-    )
-    next_btn.place(relx=0.72, rely=0.48, relwidth=0.07, relheight=0.46)
+    ).place(relx=0.72, rely=0.48, relwidth=0.07, relheight=0.46)
 
     image_index_label = ctk.CTkLabel(bar, text="", font=("Segoe UI", 14))
     image_index_label.place(relx=0.80, rely=0.48, relwidth=0.09, relheight=0.46)
@@ -627,11 +723,9 @@ def show_camera_detection_window() -> None:
 
     camera_detection = None
 
-    # Camera stream display
     image_label = tk.Label(main_frame, bg="#0d0d0d")
     image_label.place(relx=0, rely=0, relwidth=1.0, relheight=0.93)
 
-    # Bottom control bar
     bar = ctk.CTkFrame(main_frame, corner_radius=0, height=50)
     bar.place(relx=0, rely=0.93, relwidth=1.0, relheight=0.07)
     _camera_bar = bar
@@ -659,17 +753,15 @@ def show_camera_detection_window() -> None:
     Tooltip(
         camera_id_entry,
         "Index of the camera to open.\n"
-        "0 = default webcam, 1 = second camera, etc.\n"
-        "On Linux you may need to use /dev/video0 style paths.",
+        "0 = default webcam, 1 = second camera, etc.",
     )
 
-    hint = ctk.CTkLabel(
+    ctk.CTkLabel(
         bar,
         text="Press  Enter  to capture & save a frame",
         font=("Segoe UI", 11),
         text_color="gray",
-    )
-    hint.place(relx=0.48, rely=0.1, relwidth=0.28, relheight=0.8)
+    ).place(relx=0.48, rely=0.1, relwidth=0.28, relheight=0.8)
 
     start_cam_btn = ctk.CTkButton(
         bar, text="▶  START",
@@ -678,7 +770,7 @@ def show_camera_detection_window() -> None:
         font=("Segoe UI", 14, "bold"), height=34, text_color="white",
     )
     start_cam_btn.place(relx=0.80, rely=0.1, relwidth=0.18, relheight=0.8)
-    bar._start_btn = start_cam_btn   # stash ref for start/stop toggle
+    bar._start_btn = start_cam_btn
 
     root.bind("<Return>", lambda _e: save_callback())
     image_label.update_idletasks()
@@ -699,7 +791,6 @@ def show_export_window() -> None:
         font=("Segoe UI", 20, "bold"),
     ).place(relx=0.5, rely=0.06, anchor="center")
 
-    # Model file selection
     ctk.CTkLabel(main_frame, text="Trained model (.pt)", font=FLAB).place(
         relx=0.25, rely=0.14, anchor="center"
     )
@@ -711,12 +802,10 @@ def show_export_window() -> None:
     Tooltip(sel_btn, "Select the trained YOLO .pt model you want to export.")
 
     export_model_label = ctk.CTkLabel(
-        main_frame, text="No model selected",
-        font=("Segoe UI", 11), text_color="gray",
+        main_frame, text="No model selected", font=("Segoe UI", 11), text_color="gray",
     )
     export_model_label.place(relx=0.25, rely=0.28, anchor="center", relwidth=0.42)
 
-    # Format selector
     ctk.CTkLabel(main_frame, text="Export Format", font=FLAB).place(
         relx=0.25, rely=0.36, anchor="center"
     )
@@ -728,23 +817,21 @@ def show_export_window() -> None:
     fmt_menu.place(relx=0.25, rely=0.43, anchor="center", relwidth=0.30)
     Tooltip(
         fmt_menu,
-        "ONNX          – universal format; runs on CPU, GPU, or dedicated accelerators.\n"
+        "ONNX            – universal format; runs on CPU, GPU, or accelerators.\n"
         "TensorRT Engine – maximum throughput on NVIDIA GPUs; device-specific.\n"
-        "CoreML        – Apple devices (macOS / iOS).\n"
-        "TF SavedModel – TensorFlow ecosystem.\n"
-        "TFLite        – mobile / embedded TensorFlow.",
+        "CoreML          – Apple devices (macOS / iOS).\n"
+        "TF SavedModel   – TensorFlow ecosystem.\n"
+        "TFLite          – mobile / embedded TensorFlow.",
     )
 
-    # TensorRT information panel
     _trt_note = (
         "ℹ️  TensorRT notes\n\n"
         "Exporting to a TensorRT .engine file compiles the model into GPU-specific\n"
         "machine code for maximum inference speed on NVIDIA hardware.\n\n"
         "Requirements:\n"
         "  • NVIDIA GPU with CUDA ≥ 11\n"
-        "  • TensorRT ≥ 8  (install via pip: tensorrt)\n"
-        "  • The exported .engine file is bound to the GPU it was compiled on —\n"
-        "    it cannot be transferred to a different GPU model.\n\n"
+        "  • TensorRT ≥ 8  (pip install tensorrt)\n"
+        "  • The .engine file is bound to the GPU it was built on.\n\n"
         "This is an inference-optimisation step, NOT a training format."
     )
     note_box = ctk.CTkTextbox(
@@ -755,21 +842,470 @@ def show_export_window() -> None:
     note_box.insert("1.0", _trt_note)
     note_box.configure(state="disabled")
 
-    # Export button
-    export_btn = ctk.CTkButton(
+    ctk.CTkButton(
         main_frame,
         text="⬇  Export Model",
         command=lambda: export_model(export_fmt_var.get()),
         fg_color="#6a1b9a", hover_color="#4a148c",
         font=("Segoe UI", 15, "bold"), height=50,
         text_color="white", corner_radius=8,
-    )
-    export_btn.place(relx=0.25, rely=0.58, anchor="center", relwidth=0.32)
+    ).place(relx=0.25, rely=0.58, anchor="center", relwidth=0.32)
 
     export_status_label = ctk.CTkLabel(
         main_frame, text="", font=("Segoe UI", 12), wraplength=600
     )
     export_status_label.place(relx=0.5, rely=0.72, anchor="center", relwidth=0.85)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Benchmark window
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Column definitions: (header text, pixel width, anchor, tooltip text)
+_BENCH_COLS = [
+    ("Model",                  175, "w",
+     "The model file being benchmarked."),
+    ("Accuracy\n(mAP50 ↑)",    100, "center",
+     "mAP@50: How accurately the model finds objects when bounding boxes\n"
+     "overlap ground truth by ≥50%.\n\nHigher is better. 1.0 = perfect."),
+    ("Fine Accuracy\n(mAP50-95 ↑)", 110, "center",
+     "mAP@50:95: Stricter accuracy averaged across overlap thresholds\n"
+     "from 50% to 95%.  Much harder to score well on.\n\nHigher is better."),
+    ("Precision ↑",             95, "center",
+     "Precision: Of all detections the model made, what fraction\n"
+     "were actually correct?\n\nHigh precision = few false alarms.\nHigher is better."),
+    ("Recall ↑",                95, "center",
+     "Recall: Of all real objects in the test images, what fraction\n"
+     "did the model successfully find?\n\nHigh recall = few missed objects.\nHigher is better."),
+    ("Speed\n(ms / img ↓)",     95, "center",
+     "Average time in milliseconds to process one image.\n\n"
+     "Lower is faster.  Measured on your available hardware (GPU/CPU)."),
+    ("Size (MB)",               80, "center",
+     "File size of the .pt model on disk (megabytes).\n\n"
+     "Smaller models load faster and use less memory."),
+]
+
+
+def show_benchmark_window() -> None:
+    global _benchmark_models, _benchmark_results_frame
+    global _benchmark_run_btn, _benchmark_model_list_frame
+
+    _benchmark_models = []
+
+    # ── Left: setup panel ─────────────────────────────────────────────────
+    setup = ctk.CTkScrollableFrame(
+        master=main_frame,
+        label_text="Benchmark Setup",
+        label_font=("Segoe UI", 14, "bold"),
+        corner_radius=8,
+    )
+    setup.place(relx=0, rely=0, relwidth=0.40, relheight=1.0)
+
+    # ── Right: results panel ──────────────────────────────────────────────
+    _benchmark_results_frame = ctk.CTkFrame(master=main_frame, corner_radius=8)
+    _benchmark_results_frame.place(relx=0.41, rely=0, relwidth=0.59, relheight=1.0)
+
+    PAD  = {"padx": 14, "pady": 5}
+    FLAB = ("Segoe UI", 13)
+    FBTN = ("Segoe UI", 13)
+    FENT = ("Segoe UI", 13)
+
+    def _lbl(text):
+        l = ctk.CTkLabel(setup, text=text, font=FLAB, anchor="w")
+        l.pack(fill="x", padx=14, pady=(8, 1))
+        return l
+
+    def _sep():
+        ctk.CTkFrame(setup, height=1, fg_color="gray50").pack(fill="x", padx=14, pady=4)
+
+    # ── Model list ─────────────────────────────────────────────────────────
+    _lbl("Models to Benchmark")
+
+    _benchmark_model_list_frame = ctk.CTkScrollableFrame(
+        setup, height=130, fg_color="#2a2a3e", corner_radius=6
+    )
+    _benchmark_model_list_frame.pack(fill="x", padx=14, pady=4)
+
+    def _refresh_model_list():
+        for w in _benchmark_model_list_frame.winfo_children():
+            w.destroy()
+        if not _benchmark_models:
+            ctk.CTkLabel(
+                _benchmark_model_list_frame,
+                text="No models added — click Add Models below.",
+                font=("Segoe UI", 11), text_color="gray",
+            ).pack(padx=8, pady=8)
+            return
+        for i, mp in enumerate(_benchmark_models):
+            row = ctk.CTkFrame(_benchmark_model_list_frame, fg_color="transparent")
+            row.pack(fill="x", padx=4, pady=2)
+            ctk.CTkLabel(
+                row, text=Path(mp).name, font=("Segoe UI", 11), anchor="w",
+            ).pack(side="left", fill="x", expand=True, padx=4)
+            ctk.CTkButton(
+                row, text="✕", width=28, height=24,
+                fg_color="#c62828", hover_color="#b71c1c",
+                font=("Segoe UI", 11), text_color="white",
+                command=lambda x=i: (_benchmark_models.pop(x), _refresh_model_list()),
+            ).pack(side="right", padx=2)
+
+    _refresh_model_list()
+
+    def _add_models():
+        paths = filedialog.askopenfilenames(
+            title="Select YOLO model(s)",
+            filetypes=[("PyTorch model", "*.pt"), ("All files", "*.*")],
+        )
+        for p in paths:
+            p = normalize_path(p)
+            if p and p not in _benchmark_models:
+                _benchmark_models.append(p)
+        _refresh_model_list()
+
+    add_btn = ctk.CTkButton(setup, text="➕  Add Model(s)", font=FBTN, height=36, command=_add_models)
+    add_btn.pack(fill="x", **PAD)
+    Tooltip(
+        add_btn,
+        "Add one or more trained .pt model files to compare.\n"
+        "You can benchmark as many models as you like side-by-side.",
+    )
+    _sep()
+
+    # ── Dataset YAML ──────────────────────────────────────────────────────
+    _lbl("Dataset YAML")
+    _yaml_ref = [""]  # mutable container captured by closure
+
+    yaml_lbl = ctk.CTkLabel(
+        setup, text="No YAML selected", font=("Segoe UI", 11),
+        text_color="gray", anchor="w",
+    )
+
+    def _select_yaml():
+        p = normalize_path(
+            filedialog.askopenfilename(
+                title="Select dataset YAML",
+                filetypes=[("YAML files", "*.yaml *.yml"), ("All files", "*.*")],
+            )
+        )
+        if p:
+            _yaml_ref[0] = p
+            yaml_lbl.configure(text=Path(p).name, text_color="#4caf50")
+
+    yaml_btn = ctk.CTkButton(setup, text="Browse YAML…", font=FBTN, height=36, command=_select_yaml)
+    yaml_btn.pack(fill="x", **PAD)
+    Tooltip(
+        yaml_btn,
+        "Select the data.yaml for your dataset.\n\n"
+        "This YAML tells YOLO where your validation / test images and labels are.\n"
+        "Roboflow-exported datasets include data.yaml in the ZIP root.\n\n"
+        "The same YAML can be used to compare multiple models.",
+    )
+    yaml_lbl.pack(fill="x", padx=14)
+    _sep()
+
+    # ── Image size ────────────────────────────────────────────────────────
+    _lbl("Image Size")
+    img_size_entry = ctk.CTkEntry(setup, placeholder_text="640", font=FENT, height=36)
+    img_size_entry.pack(fill="x", **PAD)
+    Tooltip(
+        img_size_entry,
+        "Inference resolution in pixels (e.g. 640).\n"
+        "Should match the size the model was trained with.",
+    )
+    _sep()
+
+    # ── Split selector ────────────────────────────────────────────────────
+    _lbl("Evaluate On")
+    split_var = ctk.StringVar(value="val")
+    split_frame = ctk.CTkFrame(setup, fg_color="transparent")
+    split_frame.pack(fill="x", **PAD)
+    for _txt, _val in [("Validation set", "val"), ("Test set", "test")]:
+        ctk.CTkRadioButton(
+            split_frame, text=_txt, variable=split_var, value=_val, font=FLAB,
+        ).pack(side="left", padx=(0, 20))
+    Tooltip(
+        split_frame,
+        "Validation set  – the val split used during training (always available).\n"
+        "Test set        – a held-out set never seen during training.\n"
+        "                  Only available if your dataset has a 'test' split.",
+    )
+    _sep()
+
+    # ── Run button ────────────────────────────────────────────────────────
+    _benchmark_run_btn = ctk.CTkButton(
+        setup,
+        text="▶  Run Benchmark",
+        fg_color="#1565c0", hover_color="#0d47a1",
+        font=("Segoe UI", 15, "bold"), height=50,
+        text_color="white", corner_radius=8,
+        command=lambda: _start_benchmark(img_size_entry, split_var, _yaml_ref),
+    )
+    _benchmark_run_btn.pack(fill="x", padx=14, pady=12)
+
+    _show_benchmark_placeholder()
+
+
+def _show_benchmark_placeholder() -> None:
+    global _benchmark_results_frame
+    if _benchmark_results_frame is None:
+        return
+    for w in _benchmark_results_frame.winfo_children():
+        w.destroy()
+    ctk.CTkLabel(
+        _benchmark_results_frame,
+        text="📊  Benchmark Results",
+        font=("Segoe UI", 20, "bold"),
+    ).pack(pady=(40, 10))
+    ctk.CTkLabel(
+        _benchmark_results_frame,
+        text=(
+            "Add your trained models and a dataset YAML on the left,\n"
+            "then click  ▶ Run Benchmark  to compare them side-by-side.\n\n"
+            "Results will show accuracy, speed, and model size —\n"
+            "top performers highlighted in green / blue."
+        ),
+        font=("Segoe UI", 13),
+        text_color="gray",
+        justify="center",
+    ).pack(pady=4)
+
+
+def _start_benchmark(img_size_entry, split_var, yaml_ref) -> None:
+    global _benchmark_results_frame, _benchmark_run_btn
+
+    yaml_path = yaml_ref[0]
+    img_size_str = img_size_entry.get().strip() or "640"
+
+    errors = []
+    if not _benchmark_models:
+        errors.append("• Please add at least one model.")
+    if not yaml_path:
+        errors.append("• Please select a dataset YAML file.")
+    if not img_size_str.isdigit() or int(img_size_str) < 1:
+        errors.append("• Image Size must be a positive integer (e.g. 640).")
+    if errors:
+        messagebox.showerror("Missing input", "\n".join(errors))
+        return
+
+    img_size   = int(img_size_str)
+    split      = split_var.get()
+    models_run = list(_benchmark_models)
+
+    if _benchmark_run_btn:
+        try:
+            _benchmark_run_btn.configure(state="disabled", text="⏳ Running…")
+        except Exception:
+            pass
+
+    # ── Show log inside results panel ─────────────────────────────────────
+    if _benchmark_results_frame is None:
+        return
+    for w in _benchmark_results_frame.winfo_children():
+        w.destroy()
+
+    ctk.CTkLabel(
+        _benchmark_results_frame,
+        text="⏳  Benchmark in progress…",
+        font=("Segoe UI", 15, "bold"),
+    ).pack(anchor="w", padx=16, pady=(14, 4))
+
+    log_tb = ctk.CTkTextbox(_benchmark_results_frame, font=("Courier New", 11), corner_radius=8)
+    log_tb.pack(fill="both", expand=True, padx=14, pady=(0, 4))
+
+    bench_bar = ctk.CTkProgressBar(
+        _benchmark_results_frame, progress_color="#43a047",
+        mode="indeterminate", indeterminate_speed=0.7,
+    )
+    bench_bar.pack(fill="x", padx=14, pady=(0, 10))
+    bench_bar.start()
+
+    def _log(msg: str):
+        root.after(0, lambda: _bench_append_log(log_tb, msg))
+
+    def run_all():
+        from ultralytics import YOLO
+        all_metrics = []
+        for i, mp in enumerate(models_run):
+            _log(f"\n[{i + 1}/{len(models_run)}]  Evaluating:  {Path(mp).name}\n")
+            try:
+                model  = YOLO(mp)
+                result = model.val(data=yaml_path, imgsz=img_size, split=split, verbose=False)
+                m      = _extract_bench_metrics(mp, result)
+                all_metrics.append(m)
+                _log(
+                    f"  mAP50={m['map50']:.3f}  mAP50-95={m['map']:.3f}  "
+                    f"Speed={m['speed_ms']:.1f} ms/img\n"
+                )
+            except Exception as exc:
+                _log(f"  ❌  Error: {exc}\n")
+                all_metrics.append({
+                    "name": Path(mp).name, "path": mp,
+                    "map50": None, "map": None,
+                    "precision": None, "recall": None,
+                    "speed_ms": None,
+                    "size_mb": Path(mp).stat().st_size / 1_048_576,
+                    "error": str(exc),
+                })
+        root.after(0, lambda: _finish_benchmark(all_metrics, bench_bar))
+
+    threading.Thread(target=run_all, daemon=True).start()
+
+
+def _bench_append_log(textbox, msg: str) -> None:
+    try:
+        if textbox and textbox.winfo_exists():
+            textbox.insert("end", msg)
+            textbox.yview_moveto(1)
+    except Exception:
+        pass
+
+
+def _extract_bench_metrics(model_path: str, result) -> dict:
+    """Pull mAP / precision / recall / speed from a val() result object."""
+    size_mb = Path(model_path).stat().st_size / 1_048_576
+
+    # Try detection (box) then segmentation (seg)
+    box = getattr(result, "box", None) or getattr(result, "seg", None)
+    if box is not None:
+        map50     = float(getattr(box, "map50", 0) or 0)
+        map_val   = float(getattr(box, "map",   0) or 0)
+        precision = float(getattr(box, "mp",    0) or 0)
+        recall    = float(getattr(box, "mr",    0) or 0)
+    else:
+        map50 = map_val = precision = recall = 0.0
+
+    speed_dict = getattr(result, "speed", {}) or {}
+    speed_ms   = float(speed_dict.get("inference", 0) or 0)
+
+    return {
+        "name":      Path(model_path).name,
+        "path":      model_path,
+        "map50":     map50,
+        "map":       map_val,
+        "precision": precision,
+        "recall":    recall,
+        "speed_ms":  speed_ms,
+        "size_mb":   size_mb,
+    }
+
+
+def _finish_benchmark(all_metrics: list, bench_bar) -> None:
+    global _benchmark_run_btn
+    try:
+        bench_bar.stop()
+    except Exception:
+        pass
+    if _benchmark_run_btn:
+        try:
+            _benchmark_run_btn.configure(state="normal", text="▶  Run Benchmark")
+        except Exception:
+            pass
+    try:
+        if _benchmark_results_frame and _benchmark_results_frame.winfo_exists():
+            _show_benchmark_results(all_metrics)
+    except Exception:
+        pass
+
+
+def _show_benchmark_results(metrics_list: list) -> None:
+    """Render the results table in the right (results) panel."""
+    global _benchmark_results_frame
+    if _benchmark_results_frame is None:
+        return
+    for w in _benchmark_results_frame.winfo_children():
+        w.destroy()
+
+    if not metrics_list:
+        ctk.CTkLabel(_benchmark_results_frame, text="No results to display.").pack(pady=40)
+        return
+
+    # Identify best-in-class models (from successful runs)
+    ok = [m for m in metrics_list if m.get("map50") is not None]
+    best_acc   = max(ok, key=lambda m: m["map50"])["name"]   if ok else None
+    best_speed = min(ok, key=lambda m: m["speed_ms"])["name"] if ok else None
+    best_size  = min(ok, key=lambda m: m["size_mb"])["name"]  if ok else None
+
+    # ── Summary banner ─────────────────────────────────────────────────────
+    if ok:
+        parts = []
+        if best_acc:
+            parts.append(f"🏆 Most Accurate: {best_acc}")
+        if best_speed:
+            parts.append(f"⚡ Fastest: {best_speed}")
+        if best_size:
+            parts.append(f"🪶 Lightest: {best_size}")
+        ctk.CTkLabel(
+            _benchmark_results_frame,
+            text="   |   ".join(parts),
+            font=("Segoe UI", 13, "bold"), text_color="#89b4fa",
+        ).pack(anchor="w", padx=16, pady=(14, 2))
+
+    # ── Scrollable table ───────────────────────────────────────────────────
+    scroll = ctk.CTkScrollableFrame(
+        _benchmark_results_frame, corner_radius=8, fg_color="#1e1e2e",
+    )
+    scroll.pack(fill="both", expand=True, padx=14, pady=(4, 2))
+
+    def _make_row(parent, values_colors, bg):
+        row = ctk.CTkFrame(parent, fg_color=bg, corner_radius=4)
+        row.pack(fill="x", pady=1)
+        for (col_info, (val, color)) in zip(_BENCH_COLS, values_colors):
+            _, width, anch, tip = col_info
+            lbl = ctk.CTkLabel(
+                row, text=val,
+                font=("Segoe UI", 12),
+                text_color=color or "white",
+                justify="center", anchor=anch,
+                width=width,
+            )
+            lbl.pack(side="left", padx=4, pady=6)
+            if tip:
+                Tooltip(lbl, tip)
+        return row
+
+    # Header row
+    hdr_vals = [
+        (col[0], "#a6adc8") for col in _BENCH_COLS
+    ]
+    _make_row(scroll, hdr_vals, "#313244")
+
+    # Data rows
+    def _fmt(val, fmt="{:.3f}"):
+        return "—" if val is None else fmt.format(float(val))
+
+    for idx, m in enumerate(metrics_list):
+        is_best_acc   = m["name"] == best_acc
+        is_best_speed = m["name"] == best_speed
+        is_best_size  = m["name"] == best_size
+        bg = "#2a2a3e" if idx % 2 == 0 else "#252535"
+        vals_colors = [
+            (m["name"],                     "#cdd6f4" if is_best_acc else None),
+            (_fmt(m.get("map50")),          "#a6e3a1" if is_best_acc else None),
+            (_fmt(m.get("map")),            "#a6e3a1" if is_best_acc else None),
+            (_fmt(m.get("precision")),      None),
+            (_fmt(m.get("recall")),         None),
+            (_fmt(m.get("speed_ms"), "{:.1f}"), "#89dceb" if is_best_speed else None),
+            (_fmt(m.get("size_mb"),  "{:.1f}"), "#cba6f7" if is_best_size  else None),
+        ]
+        _make_row(scroll, vals_colors, bg)
+
+        if m.get("error"):
+            err_row = ctk.CTkFrame(scroll, fg_color=bg, corner_radius=0)
+            err_row.pack(fill="x")
+            ctk.CTkLabel(
+                err_row, text=f"  ⚠  {m['error'][:100]}",
+                font=("Segoe UI", 10), text_color="#f38ba8", anchor="w",
+            ).pack(anchor="w", padx=8, pady=(0, 4))
+
+    # ── Legend ─────────────────────────────────────────────────────────────
+    ctk.CTkLabel(
+        _benchmark_results_frame,
+        text=(
+            "🟢 Green = most accurate   🔵 Blue = fastest   🟣 Purple = smallest   "
+            "↑ higher is better   ↓ lower is better"
+        ),
+        font=("Segoe UI", 10), text_color="#6c7086",
+    ).pack(anchor="w", padx=16, pady=(2, 8))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -887,7 +1423,6 @@ def start_training(
     global project_name, train_data_path, model_save_path, custom_model_path
     global input_size, epochs, batch_size, class_names
 
-    # Read values from UI widgets
     project_name = project_name_entry.get().strip()
     input_size   = input_size_entry.get().strip()
     epochs_val   = epochs_entry.get().strip()
@@ -895,15 +1430,13 @@ def start_training(
     raw_classes  = class_names_text.get("1.0", "end-1c")
     class_names  = [n.strip() for n in raw_classes.splitlines() if n.strip()]
 
-    selected_display   = selected_model_var.get() if selected_model_var else ""
+    selected_display    = selected_model_var.get() if selected_model_var else ""
     selected_model_size = MODEL_MAP.get(selected_display, "")
 
-    # Validate
-    errors: list[str] = []
+    # Validate inputs
+    errors = []
     if not project_name:
         errors.append("• Project Name is empty.")
-    if not train_data_path:
-        errors.append("• Training Data Folder not selected.")
     if not model_save_path:
         errors.append("• Model Save Folder not selected.")
     if not selected_model_size and not custom_model_path:
@@ -917,6 +1450,10 @@ def start_training(
     if not class_names:
         errors.append("• Class Names are empty.")
 
+    # When using a Roboflow YAML we don't need a raw data folder
+    if not roboflow_yaml_path and not train_data_path:
+        errors.append("• Training Data Folder not selected (or import a Roboflow ZIP).")
+
     if errors:
         messagebox.showerror("Missing / invalid input", "\n".join(errors))
         return
@@ -924,12 +1461,16 @@ def start_training(
     epochs     = epochs_val
     batch_size = batch_val
 
-    yaml_path = create_yaml(project_name, train_data_path, class_names, model_save_path)
+    # Use the Roboflow YAML directly if one was imported, otherwise build one
+    if roboflow_yaml_path:
+        yaml_path = roboflow_yaml_path
+    else:
+        yaml_path = create_yaml(project_name, train_data_path, class_names, model_save_path)
+
     _run_training_subprocess(yaml_path, selected_model_size)
 
 
 def _run_training_subprocess(yaml_path: str, selected_model_size: str) -> None:
-    """Spawn src/train.py in a subprocess and stream its output to the log box."""
     global progress_bar, output_textbox
 
     cmd = [
@@ -943,7 +1484,7 @@ def _run_training_subprocess(yaml_path: str, selected_model_size: str) -> None:
         str(epochs),
         yaml_path,
         str(batch_size),
-        custom_model_path,   # empty string → train.py treats as "no custom model"
+        custom_model_path,
     ]
 
     def run() -> None:
@@ -1007,7 +1548,6 @@ def start_image_detection() -> None:
 
 
 def _on_detection_complete(results_dir: str) -> None:
-    """Called from the detection thread; schedules GUI update on the main thread."""
     global image_paths, current_image_index
     image_paths = sorted(
         str(p) for p in Path(results_dir).iterdir()
@@ -1051,7 +1591,6 @@ def start_camera_detection() -> None:
         messagebox.showerror("Error", "Camera ID must be an integer (e.g. 0, 1, 2).")
         return
 
-    # Switch button to STOP
     if _camera_bar and hasattr(_camera_bar, "_start_btn"):
         _camera_bar._start_btn.configure(
             text="■  STOP",
@@ -1148,7 +1687,7 @@ root = ctk.CTk()
 root.title("YOLO Training & Detection Studio")
 root.geometry(f"{screen_w}x{screen_h}")
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# ── Sidebar ────────────────────────────────────────────────────────────────────
 SIDEBAR_W = 210
 sidebar = ctk.CTkFrame(master=root, width=SIDEBAR_W, corner_radius=0, fg_color="#1e1e2e")
 sidebar.pack(side="left", fill="y")
@@ -1158,18 +1697,19 @@ ctk.CTkLabel(
     sidebar, text="YOLO Studio", font=("Segoe UI", 17, "bold"), text_color="#cdd6f4"
 ).pack(pady=(18, 2))
 ctk.CTkLabel(
-    sidebar, text="Train · Detect · Export", font=("Segoe UI", 10), text_color="#6c7086"
+    sidebar, text="Train · Detect · Benchmark", font=("Segoe UI", 10), text_color="#6c7086"
 ).pack(pady=(0, 6))
 ctk.CTkFrame(sidebar, height=1, fg_color="#45475a").pack(fill="x", padx=10, pady=(0, 10))
 
 _NAV = [
-    ("🏋  Train",   "Train",  "#89b4fa"),
-    ("🔍  Detect",  "Detect", "#a6e3a1"),
-    ("📷  Camera",  "Camera", "#fab387"),
-    ("⬇  Export",  "Export", "#cba6f7"),
+    ("🏋  Train",       "Train",      "#89b4fa"),
+    ("🔍  Detect",      "Detect",     "#a6e3a1"),
+    ("📷  Camera",      "Camera",     "#fab387"),
+    ("📊  Benchmark",   "Benchmark",  "#f9e2af"),
+    ("⬇  Export",      "Export",     "#cba6f7"),
 ]
 for _label, _key, _colour in _NAV:
-    _btn = ctk.CTkButton(
+    ctk.CTkButton(
         sidebar,
         text=_label,
         command=lambda k=_key: on_sidebar_select(k),
@@ -1177,10 +1717,9 @@ for _label, _key, _colour in _NAV:
         text_color="#1e1e2e",
         hover_color="#585b70",
         font=("Segoe UI", 14, "bold"),
-        height=46,
+        height=44,
         corner_radius=8,
-    )
-    _btn.pack(fill="x", padx=10, pady=5)
+    ).pack(fill="x", padx=10, pady=4)
 
 ctk.CTkFrame(sidebar, height=1, fg_color="#45475a").pack(fill="x", padx=10, pady=8)
 
@@ -1204,11 +1743,11 @@ ctk.CTkLabel(
     sidebar, text="© 2024 SpreadKnowledge", font=("Segoe UI", 9), text_color="#585b70"
 ).pack(pady=6)
 
-# ── Main frame ────────────────────────────────────────────────────────────────
+# ── Main frame ─────────────────────────────────────────────────────────────────
 main_frame = ctk.CTkFrame(master=root, corner_radius=0)
 main_frame.pack(fill="both", expand=True)
 
-# ── Run ───────────────────────────────────────────────────────────────────────
+# ── Run ────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     root.after(100, update_output_textbox)
     root.mainloop()
