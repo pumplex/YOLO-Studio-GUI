@@ -14,4 +14,5 @@ torchvision
 customtkinter
 Pillow
 ultralytics
+matplotlib
 # pyyaml is installed automatically as a transitive dependency of ultralytics
