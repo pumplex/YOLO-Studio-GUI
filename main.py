@@ -65,6 +65,12 @@ mimetypes.init()
 # ─────────────────────────────────────────────────────────────────────────────
 #  Audio helpers  (Live Video tab)
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Named constants for audio extraction and sync
+_AUDIO_EXTRACTION_TIMEOUT_SECS = 120   # max seconds to wait for ffmpeg
+_MIN_AUDIO_FILE_SIZE_BYTES      = 100   # sanity check: file must be non-trivial
+_AUDIO_SYNC_CHECK_INTERVAL      = 75    # frames between sync checks
+_AUDIO_SYNC_THRESHOLD_SECS      = 0.5   # seconds of drift before resyncing
 def _audio_extract_to_temp(video_path: str) -> str | None:
     """Extract audio track from *video_path* to a temporary MP3 using ffmpeg.
 
@@ -72,7 +78,11 @@ def _audio_extract_to_temp(video_path: str) -> str | None:
     the video has no audio.
     """
     import tempfile
-    temp = os.path.join(tempfile.gettempdir(), f"yolo_studio_audio_{os.getpid()}.mp3")
+    # Use NamedTemporaryFile to get a unique, collision-safe path
+    with tempfile.NamedTemporaryFile(
+        suffix=".mp3", prefix="yolo_studio_audio_", delete=False
+    ) as _tmp:
+        temp = _tmp.name
     try:
         result = subprocess.run(
             [
@@ -81,15 +91,19 @@ def _audio_extract_to_temp(video_path: str) -> str | None:
                 temp,
             ],
             capture_output=True,
-            timeout=120,
+            timeout=_AUDIO_EXTRACTION_TIMEOUT_SECS,
         )
-        if result.returncode == 0 and os.path.exists(temp) and os.path.getsize(temp) > 100:
+        if (
+            result.returncode == 0
+            and os.path.exists(temp)
+            and os.path.getsize(temp) > _MIN_AUDIO_FILE_SIZE_BYTES
+        ):
             return temp
     except FileNotFoundError:
         pass  # ffmpeg not on PATH
     except Exception:
         pass
-    # Clean up zero-size file if created
+    # Clean up file if extraction failed
     try:
         if os.path.exists(temp):
             os.unlink(temp)
@@ -1449,7 +1463,8 @@ def show_image_detection_window() -> None:
 
     zoom_slider = ctk.CTkSlider(
         _detect_nav_bar, from_=0.25, to=2.0,
-        variable=_detect_zoom_var, number_of_steps=35,
+        variable=_detect_zoom_var,
+        number_of_steps=int((2.0 - 0.25) / 0.05),  # 0.05× steps
     )
     zoom_slider.place(relx=0.55, rely=0.55, relwidth=0.09, relheight=0.35)
 
@@ -2024,12 +2039,12 @@ def _live_video_thread() -> None:
             frac = frame_idx / total_frames
 
             # ── Periodic audio sync (skip-based) ──────────────────────────
-            if audio_sync and _live_audio_temp_file and frame_idx % 75 == 0 and frame_idx > 0:
+            if audio_sync and _live_audio_temp_file and frame_idx % _AUDIO_SYNC_CHECK_INTERVAL == 0 and frame_idx > 0:
                 video_time = frame_idx / fps
                 elapsed = time.time() - _live_audio_wall_start[0]
                 drift = video_time - elapsed
-                if abs(drift) > 0.5:
-                    # Audio is drifting more than 0.5s — re-sync to video position
+                if abs(drift) > _AUDIO_SYNC_THRESHOLD_SECS:
+                    # Audio is drifting — re-sync to video position
                     _audio_set_pos(video_time)
                     _live_audio_wall_start[0] = time.time() - video_time
 
