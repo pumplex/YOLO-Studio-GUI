@@ -125,9 +125,9 @@ def _atempo_filter_chain(speed: float) -> list:
 
     Each atempo value must be in [0.5, 2.0] (ffmpeg constraint).
     The product of all returned values equals *speed*.
+    *speed* must be positive; values <= 0 are clamped to a minimum of 0.1.
     """
-    if speed <= 0.0:
-        return [0.5]
+    speed = max(0.1, speed)  # guard against zero or negative values
     filters = []
     # Handle values below 1.0 by chaining 0.5 multipliers
     while speed < 0.5:
@@ -1827,8 +1827,9 @@ def show_live_video_window() -> None:
     Tooltip(
         sync_chk,
         "Match audio playback speed to the actual video FPS.\n"
-        "After a short calibration phase the audio is re-extracted at the\n"
-        "correct speed so that audio and video stay in sync without stutters.",
+        f"After a short calibration phase ({_AUDIO_CALIB_FRAMES} frames) the audio\n"
+        "is re-extracted at the correct speed so that audio and video\n"
+        "stay in sync without stutters.",
     )
 
     # ── Volume control (to the left of the Video button at relx=0.51) ─────
@@ -2339,6 +2340,8 @@ def _live_video_thread() -> None:
                         _vid_path = _live_video_path
                         _cur_frame = frame_idx
                         _vol = _live_audio_volume_var.get() if _live_audio_volume_var else 1.0
+                        # Clamp to a practical range: 0.1 (extreme slow-motion GPU)
+                        # to 10.0 (theoretical super-fast hardware).
                         _speed = max(0.1, min(10.0, speed_ratio))
 
                         def _respeed(
