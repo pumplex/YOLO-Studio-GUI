@@ -113,9 +113,10 @@ def _get_device() -> str:
 
 # Named constants
 _AUDIO_EXTRACTION_TIMEOUT_SECS = 120   # max seconds to wait for ffmpeg extraction
-_PCM_SAMPLE_RATE = 44100               # output sample rate (Hz)
-_PCM_CHANNELS    = 2                   # stereo output
-_PCM_BLOCK_SIZE  = 2048               # frames per sounddevice callback
+_PCM_SAMPLE_RATE       = 44100         # output sample rate (Hz)
+_PCM_CHANNELS          = 2             # stereo output
+_PCM_BLOCK_SIZE        = 2048          # frames per sounddevice callback
+_PCM_BYTES_PER_SAMPLE  = 2             # int16 → 2 bytes per sample
 
 # PCM streaming state (shared between video thread and audio callback thread)
 _pcm_data         = None   # np.ndarray shape (N, _PCM_CHANNELS) float32
@@ -153,7 +154,7 @@ def _pcm_extract(video_path: str):
             capture_output=True,
             timeout=_AUDIO_EXTRACTION_TIMEOUT_SECS,
         )
-        if result.returncode == 0 and len(result.stdout) >= _PCM_CHANNELS * 2:
+        if result.returncode == 0 and len(result.stdout) >= _PCM_CHANNELS * _PCM_BYTES_PER_SAMPLE:
             raw = np.frombuffer(result.stdout, dtype=np.int16)
             # Discard any trailing incomplete frame
             n_complete = (len(raw) // _PCM_CHANNELS) * _PCM_CHANNELS
@@ -2293,7 +2294,7 @@ def _live_video_thread() -> None:
             # Use an EMA of the total frame time so short spikes don't cause
             # jarring audio pitch shifts.  Only update when sync is enabled.
             if audio_want and audio_sync and _pcm_stream is not None:
-                _fps_ema = 0.92 * _fps_ema + 0.08 * (1.0 / total_frame_time)
+                _fps_ema = 0.92 * _fps_ema + 0.08 * (1.0 / max(total_frame_time, 0.001))
                 speed_ratio = max(0.05, min(10.0, _fps_ema / fps))
                 _pcm_speed[0] = speed_ratio
 
