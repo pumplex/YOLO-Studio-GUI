@@ -118,6 +118,7 @@ _MIN_AUDIO_FILE_SIZE_BYTES      = 100   # sanity check: file must be non-trivial
 _AUDIO_SYNC_CHECK_INTERVAL      = 15    # frames between sync checks (less frequent = fewer stutters)
 _AUDIO_SYNC_THRESHOLD_SECS      = 1.5   # seconds of drift before hard-resyncing
 _AUDIO_CALIB_FRAMES             = 40    # frames to sample before speed-matching audio
+_MIN_AUDIO_SPEED_RATIO          = 0.1   # guard against invalid/degenerate speed values
 
 
 def _atempo_filter_chain(speed: float) -> list:
@@ -299,7 +300,7 @@ def _audio_video_time_to_track_pos(video_seconds: float) -> float:
         speed_ratio = float(_live_audio_speed_ratio[0]) if _live_audio_speed_ratio else 1.0
     except Exception:
         speed_ratio = 1.0
-    return max(0.0, video_seconds / max(0.1, speed_ratio))
+    return max(0.0, video_seconds / max(_MIN_AUDIO_SPEED_RATIO, speed_ratio))
 
 
 def _audio_track_elapsed_to_video_time(track_seconds: float) -> float:
@@ -308,7 +309,7 @@ def _audio_track_elapsed_to_video_time(track_seconds: float) -> float:
         speed_ratio = float(_live_audio_speed_ratio[0]) if _live_audio_speed_ratio else 1.0
     except Exception:
         speed_ratio = 1.0
-    return max(0.0, track_seconds * max(0.1, speed_ratio))
+    return max(0.0, track_seconds * max(_MIN_AUDIO_SPEED_RATIO, speed_ratio))
 
 
 def _cleanup_live_audio() -> None:
@@ -2396,7 +2397,7 @@ def _live_video_thread() -> None:
                             file_path, bio = _audio_extract(video_path, speed=sp)
                             # Audio start position in the *speed-adjusted* track
                             # corresponds to original_time / speed_ratio
-                            start_pos_adj = max(0.0, (start_frame / fps) / max(0.1, sp))
+                            start_pos_adj = max(0.0, (start_frame / fps) / max(_MIN_AUDIO_SPEED_RATIO, sp))
                             if bio is not None:
                                 _live_audio_bytes_io = bio
                                 _live_audio_speed_ratio[0] = sp
