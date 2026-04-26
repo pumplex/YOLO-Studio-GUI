@@ -1142,6 +1142,8 @@ def show_live_video_window() -> None:
         target = int(float(val) * max(total - 1, 1))
         _live_video_seek_to[0] = target
         _live_video_seeking[0] = True
+        # Hold the "seeking" flag briefly so the thread doesn't immediately
+        # overwrite the slider position before the seek has been processed.
         root.after(400, lambda: _live_video_seeking.__setitem__(0, False))
 
     _live_video_seek_slider = ctk.CTkSlider(
@@ -1333,13 +1335,16 @@ def show_live_video_window() -> None:
         target = max(0, min(total - 1, cur + int(delta_sec * fps)))
         _live_video_seek_to[0] = target
 
-    for _dt, _lbl_txt, _rx in [(-10, "−10s", 0.56), (-5, "−5s", 0.62),
-                                  (+5, "+5s", 0.68), (+10, "+10s", 0.74)]:
+    # Jump buttons: (delta_seconds, label, relative_x_position)
+    for delta_seconds, button_label, rel_x_pos in [
+        (-10, "−10s", 0.56), (-5, "−5s", 0.62),
+        (+5, "+5s",   0.68), (+10, "+10s", 0.74),
+    ]:
         ctk.CTkButton(
-            bar, text=_lbl_txt, command=lambda d=_dt: _jump(d),
+            bar, text=button_label, command=lambda d=delta_seconds: _jump(d),
             fg_color="#37474f", hover_color="#263238",
             font=("Segoe UI", 10), height=24,
-        ).place(relx=_rx, rely=0.56, relwidth=0.055, relheight=0.34)
+        ).place(relx=rel_x_pos, rely=0.56, relwidth=0.055, relheight=0.34)
 
 
 def _start_live_video() -> None:
@@ -1434,12 +1439,13 @@ def _live_video_thread() -> None:
             if not ret:
                 break  # end of video
 
-            # Store raw frame for screenshots (thread-safe copy)
+            # Copy frames for screenshot use: the UI thread may read these at any
+            # time, so we must not hand over a reference that the loop will mutate.
             _live_video_raw_frame[0] = frame.copy()
 
             results = model.predict(frame, save=False, conf=conf, half=half, verbose=False)
             annotated = results[0].plot()
-            _live_video_ann_frame[0] = annotated.copy()
+            _live_video_ann_frame[0] = annotated  # .plot() already returns a new array
 
             # Update shared state
             _live_video_frame_ref[0] = frame_idx
