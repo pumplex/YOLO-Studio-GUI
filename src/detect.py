@@ -246,6 +246,7 @@ def detect_images(
     half: bool = False,
     workers: int = 4,
     cancel_flag: Optional[Callable] = None,
+    task: Optional[str] = None,
 ):
     """Run YOLO detection on all images/videos in a folder.
 
@@ -255,8 +256,13 @@ def detect_images(
         Called after each image or video with the running count.
     cancel_flag()
         Callable that returns True when the user wants to abort.
+    task
+        Explicit YOLO task type ('detect', 'segment', 'classify', 'pose', 'obb').
+        Required for exported formats such as TensorRT (.engine) or ONNX (.onnx)
+        that do not embed task metadata.  When None the task is inferred
+        automatically (works for .pt files but may fail for exported formats).
     """
-    model = YOLO(model_path)
+    model = YOLO(model_path, task=task)
 
     images_folder = normalize_path(images_folder)
     image_files, video_files = get_media_files(images_folder)

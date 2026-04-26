@@ -221,6 +221,7 @@ _detect_model_info_label  = None
 _detect_conf_var          = None        # DoubleVar for confidence threshold
 _detect_half_var          = None        # BooleanVar for FP16
 _detect_workers_var       = None        # StringVar for workers
+_detect_task_var          = None        # StringVar for model task override
 _detect_progress_label    = None        # text progress label
 _detect_nav_bar           = None        # bottom nav bar in detect view
 
@@ -332,7 +333,7 @@ def on_sidebar_select(key: str) -> None:
     global _benchmark_results_frame, _benchmark_run_btn, _benchmark_model_list_frame
     global _detect_start_btn, _detect_controls, _detect_file_count_label
     global _detect_model_info_label, _detect_conf_var, _detect_half_var
-    global _detect_workers_var, _detect_progress_label, _detect_nav_bar
+    global _detect_workers_var, _detect_task_var, _detect_progress_label, _detect_nav_bar
     global _live_video_label, _live_video_status_label, _live_video_start_btn, _live_video_bar
     global _live_video_pause_btn, _live_video_seek_slider, _live_video_half_var
     global _live_video_conf_var, _live_video_paused
@@ -359,6 +360,7 @@ def on_sidebar_select(key: str) -> None:
     _detect_conf_var = None
     _detect_half_var = None
     _detect_workers_var = None
+    _detect_task_var = None
     _detect_progress_label = None
     _detect_nav_bar = None
     _live_video_label = None
@@ -875,7 +877,7 @@ def show_image_detection_window() -> None:
     global detect_folder_label, detect_model_label
     global _detect_start_btn, _detect_controls
     global _detect_file_count_label, _detect_model_info_label
-    global _detect_conf_var, _detect_half_var, _detect_workers_var
+    global _detect_conf_var, _detect_half_var, _detect_workers_var, _detect_task_var
     global _detect_progress_label, _detect_nav_bar
 
     FONT  = ("Segoe UI", 12)
@@ -920,13 +922,13 @@ def show_image_detection_window() -> None:
     _csep()
 
     # Model section
-    _clbl("🤖  YOLO Model (.pt)")
+    _clbl("🤖  YOLO Model (.pt / .engine / .onnx)")
     sel_model_btn = ctk.CTkButton(
         cfg, text="Browse Model…", font=FBTN, height=34,
         command=select_detection_model,
     )
     sel_model_btn.pack(fill="x", padx=12, pady=(4, 2))
-    Tooltip(sel_model_btn, "Choose a trained YOLO .pt weights file for inference.")
+    Tooltip(sel_model_btn, "Choose a trained YOLO weights file for inference.\nSupports .pt, TensorRT .engine, ONNX .onnx, and other exported formats.")
 
     detect_model_label = ctk.CTkLabel(
         cfg, text="No model selected", font=("Segoe UI", 10),
@@ -989,6 +991,24 @@ def show_image_detection_window() -> None:
     )
     _csep()
 
+    # Task override (required for TensorRT / ONNX exported models)
+    _TASK_OPTIONS = ["Auto-detect", "detect", "segment", "classify", "pose", "obb"]
+    _clbl("Model Task")
+    _detect_task_var = ctk.StringVar(value=_TASK_OPTIONS[0])
+    task_menu = ctk.CTkOptionMenu(
+        cfg, values=_TASK_OPTIONS, variable=_detect_task_var, font=FLAB, height=32,
+    )
+    task_menu.pack(fill="x", padx=12, pady=(2, 4))
+    Tooltip(
+        task_menu,
+        "Task type for the YOLO model.\n"
+        "'Auto-detect' works for .pt files but will fail for exported\n"
+        "formats like TensorRT (.engine) or ONNX (.onnx) that do not\n"
+        "embed task metadata.  In those cases select the correct task\n"
+        "explicitly (e.g. 'segment' for segmentation models).",
+    )
+    _csep()
+
     # Start / Cancel button
     _detect_start_btn = ctk.CTkButton(
         cfg, text="▶  Start Detection",
@@ -1011,7 +1031,7 @@ def show_image_detection_window() -> None:
     Tooltip(gallery_btn, "View all detection result images in a scrollable thumbnail gallery.\nClick any thumbnail to open it full-screen.")
 
     _detect_controls = [sel_folder_btn, sel_model_btn, conf_slider, half_chk,
-                        workers_entry_d]
+                        workers_entry_d, task_menu]
 
     # ── Right: image viewer ────────────────────────────────────────────────
     viewer = ctk.CTkFrame(main_frame, corner_radius=8, fg_color="#0d1117")
@@ -2384,7 +2404,13 @@ def select_detection_model() -> None:
     path = normalize_path(
         filedialog.askopenfilename(
             title="Select YOLO Model",
-            filetypes=[("YOLO model", "*.pt"), ("All files", "*.*")],
+            filetypes=[
+                ("YOLO model", "*.pt *.engine *.onnx *.tflite *.pb"),
+                ("PyTorch weights", "*.pt"),
+                ("TensorRT engine", "*.engine"),
+                ("ONNX model", "*.onnx"),
+                ("All files", "*.*"),
+            ],
         )
     )
     if not path:
@@ -2428,12 +2454,19 @@ def select_detection_model() -> None:
                 )
             else:
                 txt = f"Size: {sz:.1f} MB"
+            # Auto-populate the task dropdown when the model reports a known task
+            _KNOWN_TASKS = {"detect", "segment", "classify", "pose", "obb"}
+            auto_task = task if task in _KNOWN_TASKS else None
         except Exception as exc:
             txt = f"Could not load info: {exc}"
-        root.after(
-            0,
-            lambda: _safe_label_configure(_detect_model_info_label, text=txt, text_color="#a6adc8"),
-        )
+            auto_task = None
+
+        def _apply(t=txt, at=auto_task):
+            _safe_label_configure(_detect_model_info_label, text=t, text_color="#a6adc8")
+            if at is not None and _detect_task_var is not None:
+                _detect_task_var.set(at)
+
+        root.after(0, _apply)
 
     threading.Thread(target=_load_info, daemon=True).start()
 
@@ -2678,6 +2711,8 @@ def _begin_image_detection() -> None:
         workers_val = int(_detect_workers_var.get()) if _detect_workers_var else 4
     except Exception:
         workers_val = 4
+    raw_task = _detect_task_var.get() if _detect_task_var else "Auto-detect"
+    task_val = None if raw_task == "Auto-detect" else raw_task
 
     def _progress_cb(current: int, total: int, msg: str) -> None:
         frac = current / max(total, 1)
@@ -2694,6 +2729,7 @@ def _begin_image_detection() -> None:
             half=half,
             workers=workers_val,
             cancel_flag=lambda: _detection_cancel_flag[0],
+            task=task_val,
         ),
         daemon=True,
     ).start()
