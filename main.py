@@ -1606,23 +1606,23 @@ def show_image_detection_window() -> None:
     zoom_lbl = ctk.CTkLabel(
         _detect_nav_bar, text="🔍 1.00×", font=("Segoe UI", 9), anchor="w"
     )
-    zoom_lbl.place(relx=0.52, rely=0.05, relwidth=0.07, relheight=0.42)
+    zoom_lbl.place(relx=0.52, rely=0.05, relwidth=0.055, relheight=0.42)
 
-    # ── Progress label (top row, right of zoom label) ─────────────────────
-    _detect_progress_label = ctk.CTkLabel(
-        _detect_nav_bar, text=_detect_progress_text,
-        font=("Segoe UI", 9), text_color="#a6adc8", anchor="w",
-    )
-    _detect_progress_label.place(relx=0.60, rely=0.05, relwidth=0.39, relheight=0.42)
-
-    # ── Row 2: zoom slider + progress bar side by side ────────────────────
+    # ── Zoom slider (top row, right of zoom label) ─────────────────────────
     zoom_slider = ctk.CTkSlider(
         _detect_nav_bar, from_=0.25, to=2.0,
         variable=_detect_zoom_var,
         number_of_steps=int((2.0 - 0.25) / 0.05),  # 0.05× steps
         height=14,
     )
-    zoom_slider.place(relx=0.52, rely=0.55, relwidth=0.07, relheight=0.36)
+    zoom_slider.place(relx=0.578, rely=0.10, relwidth=0.075, relheight=0.32)
+
+    # ── Progress label (top row, right of zoom slider) ─────────────────────
+    _detect_progress_label = ctk.CTkLabel(
+        _detect_nav_bar, text=_detect_progress_text,
+        font=("Segoe UI", 9), text_color="#a6adc8", anchor="w",
+    )
+    _detect_progress_label.place(relx=0.66, rely=0.05, relwidth=0.33, relheight=0.42)
 
     def _on_zoom(*_):
         z = _detect_zoom_var.get()
@@ -1637,11 +1637,12 @@ def show_image_detection_window() -> None:
         "0.25× = thumbnail view   1.00× = fit to panel   2.00× = zoomed in",
     )
 
+    # ── Progress bar (thin full-width strip at bottom of nav bar) ──────────
     detection_progress_bar = ctk.CTkProgressBar(
         _detect_nav_bar, progress_color="#43a047", mode="determinate", height=5,
     )
     detection_progress_bar.set(_detect_progress_value)
-    detection_progress_bar.place(relx=0.60, rely=0.58, relwidth=0.39, relheight=0.34)
+    detection_progress_bar.place(relx=0.01, rely=0.62, relwidth=0.98, relheight=0.20)
 
     # Restore previously loaded result images if any exist
     if image_paths:
@@ -1785,20 +1786,20 @@ def show_live_video_window() -> None:
     half_chk = ctk.CTkCheckBox(
         bar, text="FP16", variable=_live_video_half_var, font=FONT,
     )
-    half_chk.place(relx=0.01, rely=0.64, relwidth=0.065, relheight=0.30)
+    half_chk.place(relx=0.16, rely=0.56, relwidth=0.07, relheight=0.38)
     Tooltip(half_chk, "Run inference in half-precision (FP16) for ~2× speed on NVIDIA GPUs.")
 
     # ── Confidence threshold (compact) ────────────────────────────────────
     _live_video_conf_var = ctk.DoubleVar(value=0.5)
     conf_lbl = ctk.CTkLabel(bar, text="Conf:", font=FONT, anchor="w")
-    conf_lbl.place(relx=0.08, rely=0.64, relwidth=0.04, relheight=0.30)
+    conf_lbl.place(relx=0.24, rely=0.56, relwidth=0.03, relheight=0.38)
     conf_slider = ctk.CTkSlider(
         bar, from_=0.01, to=1.0, variable=_live_video_conf_var,
         number_of_steps=99, width=70,
     )
-    conf_slider.place(relx=0.12, rely=0.68, relwidth=0.08, relheight=0.22)
+    conf_slider.place(relx=0.27, rely=0.64, relwidth=0.07, relheight=0.22)
     conf_val_lbl = ctk.CTkLabel(bar, text="0.50", font=FONT, anchor="w")
-    conf_val_lbl.place(relx=0.21, rely=0.64, relwidth=0.04, relheight=0.30)
+    conf_val_lbl.place(relx=0.35, rely=0.56, relwidth=0.04, relheight=0.38)
     _live_video_conf_var.trace_add(
         "write",
         lambda *_: conf_val_lbl.configure(text=f"{_live_video_conf_var.get():.2f}"),
@@ -1810,7 +1811,7 @@ def show_live_video_window() -> None:
     audio_chk = ctk.CTkCheckBox(
         bar, text="🔊 Audio", variable=_live_audio_enabled_var, font=FONT,
     )
-    audio_chk.place(relx=0.26, rely=0.64, relwidth=0.09, relheight=0.30)
+    audio_chk.place(relx=0.40, rely=0.56, relwidth=0.085, relheight=0.38)
     Tooltip(
         audio_chk,
         "Enable audio playback alongside the detection video.\n\n"
@@ -1823,7 +1824,7 @@ def show_live_video_window() -> None:
     sync_chk = ctk.CTkCheckBox(
         bar, text="Sync", variable=_live_audio_sync_var, font=FONT,
     )
-    sync_chk.place(relx=0.36, rely=0.64, relwidth=0.065, relheight=0.30)
+    sync_chk.place(relx=0.49, rely=0.56, relwidth=0.065, relheight=0.38)
     Tooltip(
         sync_chk,
         "Match audio playback speed to the actual video FPS.\n"
@@ -1832,17 +1833,17 @@ def show_live_video_window() -> None:
         "stay in sync without stutters.",
     )
 
-    # ── Volume control (to the left of the Video button at relx=0.51) ─────
+    # ── Volume control (placed to the right of the +10s seek button) ──────
     _live_audio_volume_var = ctk.DoubleVar(value=1.0)
     vol_lbl = ctk.CTkLabel(bar, text="Vol:", font=FONT, anchor="w")
-    vol_lbl.place(relx=0.43, rely=0.64, relwidth=0.03, relheight=0.30)
+    vol_lbl.place(relx=0.82, rely=0.56, relwidth=0.03, relheight=0.38)
     vol_slider = ctk.CTkSlider(
         bar, from_=0.0, to=1.0, variable=_live_audio_volume_var,
-        number_of_steps=20, width=50,
+        number_of_steps=20,
     )
-    vol_slider.place(relx=0.46, rely=0.68, relwidth=0.04, relheight=0.22)
+    vol_slider.place(relx=0.85, rely=0.64, relwidth=0.07, relheight=0.22)
     vol_val_lbl = ctk.CTkLabel(bar, text="100%", font=FONT, anchor="w")
-    vol_val_lbl.place(relx=0.50, rely=0.64, relwidth=0.04, relheight=0.30)
+    vol_val_lbl.place(relx=0.93, rely=0.56, relwidth=0.045, relheight=0.38)
 
     def _on_volume_change(*_):
         v = _live_audio_volume_var.get()
@@ -2039,17 +2040,17 @@ def show_live_video_window() -> None:
     _live_video_start_btn.place(relx=0.93, rely=0.06, relwidth=0.06, relheight=0.38)
     bar._start_btn = _live_video_start_btn
 
-    # Second row of buttons
+    # Second row: Task | FP16 | Conf | Audio | Sync | Seek buttons | Volume
     # ── Task override (required for TensorRT / ONNX exported models) ──────
     _LIVE_TASK_OPTIONS = ["Auto-detect", "detect", "segment", "classify", "pose", "obb"]
     _live_video_task_var = ctk.StringVar(value=_LIVE_TASK_OPTIONS[0])
     task_lbl = ctk.CTkLabel(bar, text="Task:", font=FONT, anchor="w")
-    task_lbl.place(relx=0.01, rely=0.56, relwidth=0.04, relheight=0.30)
+    task_lbl.place(relx=0.01, rely=0.56, relwidth=0.04, relheight=0.38)
     task_menu = ctk.CTkOptionMenu(
         bar, values=_LIVE_TASK_OPTIONS, variable=_live_video_task_var,
         font=FONT, height=24,
     )
-    task_menu.place(relx=0.06, rely=0.56, relwidth=0.14, relheight=0.34)
+    task_menu.place(relx=0.05, rely=0.56, relwidth=0.10, relheight=0.38)
     Tooltip(
         task_menu,
         "Task type for the YOLO model.\n"
@@ -2060,7 +2061,7 @@ def show_live_video_window() -> None:
     )
 
     ctk.CTkLabel(bar, text="Seek:", font=FONT, text_color="gray").place(
-        relx=0.51, rely=0.56, relwidth=0.04, relheight=0.30
+        relx=0.56, rely=0.56, relwidth=0.04, relheight=0.38
     )
 
     def _jump(delta_sec: float) -> None:
@@ -2072,14 +2073,14 @@ def show_live_video_window() -> None:
 
     # Jump buttons: (delta_seconds, label, relative_x_position)
     for delta_seconds, button_label, rel_x_pos in [
-        (-10, "−10s", 0.56), (-5, "−5s", 0.62),
-        (+5, "+5s",   0.68), (+10, "+10s", 0.74),
+        (-10, "−10s", 0.60), (-5, "−5s", 0.65),
+        (+5, "+5s",   0.70), (+10, "+10s", 0.76),
     ]:
         ctk.CTkButton(
             bar, text=button_label, command=lambda d=delta_seconds: _jump(d),
             fg_color="#37474f", hover_color="#263238",
             font=("Segoe UI", 10), height=24,
-        ).place(relx=rel_x_pos, rely=0.56, relwidth=0.055, relheight=0.34)
+        ).place(relx=rel_x_pos, rely=0.56, relwidth=0.05, relheight=0.38)
 
 
 def _start_live_video() -> None:
@@ -4243,7 +4244,7 @@ _ram_chk = ctk.CTkCheckBox(
     sidebar,
     text="Save temp files to RAM",
     variable=_use_ram_temp_var,
-    font=("Segoe UI", 10),
+    font=("Segoe UI", 12),
 )
 _ram_chk.pack(fill="x", padx=10, pady=(2, 4))
 Tooltip(
@@ -4272,13 +4273,14 @@ else:
 
 ctk.CTkLabel(
     sidebar, text=_cuda_label_text,
-    font=("Segoe UI", 10, "bold"), text_color=_cuda_label_color,
-).pack(padx=10, anchor="w")
+    font=("Segoe UI", 12, "bold"), text_color=_cuda_label_color,
+    anchor="center",
+).pack(fill="x", padx=10)
 ctk.CTkLabel(
     sidebar, text=_cuda_detail,
     font=("Segoe UI", 9), text_color="#6c7086",
     wraplength=180,
-).pack(padx=10, pady=(0, 4), anchor="w")
+).pack(fill="x", padx=10, pady=(0, 4), anchor="w")
 
 _gpu_device_var = ctk.BooleanVar(value=_cuda_available)  # default GPU when available
 
@@ -4288,7 +4290,8 @@ def _on_gpu_toggle():
 
 _gpu_row = ctk.CTkFrame(sidebar, fg_color="transparent")
 _gpu_row.pack(fill="x", padx=10, pady=(0, 4))
-ctk.CTkLabel(_gpu_row, text="CPU", font=("Segoe UI", 10)).pack(side="left")
+ctk.CTkLabel(_gpu_row, text="", width=1).pack(side="left", expand=True)  # left spacer
+ctk.CTkLabel(_gpu_row, text="CPU", font=("Segoe UI", 12)).pack(side="left")
 _gpu_switch = ctk.CTkSwitch(
     _gpu_row,
     text="",
@@ -4302,10 +4305,11 @@ _gpu_switch.pack(side="left", padx=4)
 _gpu_toggle_lbl = ctk.CTkLabel(
     _gpu_row,
     text="GPU" if _cuda_available else "CPU",
-    font=("Segoe UI", 10),
+    font=("Segoe UI", 12),
     text_color="#4caf50" if _cuda_available else "#6c7086",
 )
 _gpu_toggle_lbl.pack(side="left")
+ctk.CTkLabel(_gpu_row, text="", width=1).pack(side="left", expand=True)  # right spacer
 Tooltip(
     _gpu_switch,
     "Switch between GPU (CUDA) and CPU inference.\n\n"
