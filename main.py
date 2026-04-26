@@ -2149,18 +2149,18 @@ def _live_video_thread() -> None:
                 _vid_path = _live_video_path
                 _frame_idx = frame_idx
 
-                def _late_extract(vp=_vid_path, fi=_frame_idx, v=vol):
+                def _late_extract(video_path=_vid_path, frame_index=_frame_idx, volume=vol):
                     global _live_audio_temp_file, _live_audio_bytes_io
-                    file_path, bio = _audio_extract(vp)
-                    start = fi / fps
+                    file_path, bio = _audio_extract(video_path)
+                    start = frame_index / fps
                     if bio is not None:
                         _live_audio_bytes_io = bio
                         _live_audio_wall_start[0] = time.time() - start
-                        _audio_play(bio, start_pos=start, volume=v)
+                        _audio_play(bio, start_pos=start, volume=volume)
                     elif file_path is not None:
                         _live_audio_temp_file = file_path
                         _live_audio_wall_start[0] = time.time() - start
-                        _audio_play(file_path, start_pos=start, volume=v)
+                        _audio_play(file_path, start_pos=start, volume=volume)
 
                 threading.Thread(target=_late_extract, daemon=True).start()
                 _audio_was_on = True
@@ -4134,7 +4134,7 @@ Tooltip(
     "Switch between GPU (CUDA) and CPU inference.\n\n"
     "GPU is faster but requires a CUDA-capable NVIDIA graphics card.\n"
     "CPU mode always works but will be slower on large models.\n\n"
-    + ("CUDA is detected and ready." if _cuda_available else "CUDA is not available — CPU only."),
+    f"{'CUDA is detected and ready.' if _cuda_available else 'CUDA is not available — CPU only.'}",
 )
 
 # Spacer + footer
