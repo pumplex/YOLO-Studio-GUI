@@ -294,22 +294,28 @@ def _audio_set_volume(volume: float) -> None:
         pass
 
 
-def _audio_video_time_to_track_pos(video_seconds: float) -> float:
-    """Convert original video time to the current extracted audio timeline."""
+def _get_current_audio_speed_ratio(speed_ratio: float | None = None) -> float:
+    """Return a validated audio speed ratio."""
+    if speed_ratio is not None:
+        try:
+            return max(_MIN_AUDIO_SPEED_RATIO, float(speed_ratio))
+        except (TypeError, ValueError):
+            return 1.0
     try:
         speed_ratio = float(_live_audio_speed_ratio[0]) if _live_audio_speed_ratio else 1.0
     except (TypeError, ValueError, IndexError):
         speed_ratio = 1.0
-    return max(0.0, video_seconds / max(_MIN_AUDIO_SPEED_RATIO, speed_ratio))
+    return max(_MIN_AUDIO_SPEED_RATIO, speed_ratio)
+
+
+def _audio_video_time_to_track_pos(video_seconds: float, speed_ratio: float | None = None) -> float:
+    """Convert original video time to the current extracted audio timeline."""
+    return max(0.0, video_seconds / _get_current_audio_speed_ratio(speed_ratio))
 
 
 def _audio_track_elapsed_to_video_time(track_seconds: float) -> float:
     """Convert elapsed adjusted-track playback time back to original video time."""
-    try:
-        speed_ratio = float(_live_audio_speed_ratio[0]) if _live_audio_speed_ratio else 1.0
-    except (TypeError, ValueError, IndexError):
-        speed_ratio = 1.0
-    return max(0.0, track_seconds * max(_MIN_AUDIO_SPEED_RATIO, speed_ratio))
+    return max(0.0, track_seconds * _get_current_audio_speed_ratio())
 
 
 def _cleanup_live_audio() -> None:
@@ -2397,7 +2403,7 @@ def _live_video_thread() -> None:
                             file_path, bio = _audio_extract(video_path, speed=sp)
                             # Audio start position in the *speed-adjusted* track
                             # corresponds to original_time / speed_ratio
-                            start_pos_adj = max(0.0, (start_frame / fps) / max(_MIN_AUDIO_SPEED_RATIO, sp))
+                            start_pos_adj = _audio_video_time_to_track_pos(start_frame / fps, sp)
                             if bio is not None:
                                 _live_audio_bytes_io = bio
                                 _live_audio_speed_ratio[0] = sp
