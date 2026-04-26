@@ -4278,9 +4278,9 @@ ctk.CTkLabel(
 ).pack(fill="x", padx=10)
 ctk.CTkLabel(
     sidebar, text=_cuda_detail,
-    font=("Segoe UI", 10), text_color="#6c7086",
-    wraplength=180, anchor="center",
-).pack(fill="x", padx=10, pady=(0, 4))
+    font=("Segoe UI", 9), text_color="#6c7086",
+    wraplength=180,
+).pack(fill="x", padx=10, pady=(0, 4), anchor="w")
 
 _gpu_device_var = ctk.BooleanVar(value=_cuda_available)  # default GPU when available
 
