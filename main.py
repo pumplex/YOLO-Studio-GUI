@@ -1818,10 +1818,12 @@ def show_live_video_window() -> None:
     sync_chk.place(relx=0.49, rely=0.56, relwidth=0.065, relheight=0.38)
     Tooltip(
         sync_chk,
-        "Match audio playback speed to the actual video FPS in real time.\n"
-        "The sounddevice callback resamples each PCM chunk to match the\n"
-        "current inference speed, so audio and video stay in sync without\n"
-        "any re-extraction or seek jumps.",
+        "Keep audio in sync with the video frame position.\n"
+        "When YOLO inference is slower than real-time, audio is\n"
+        "automatically paused whenever it runs more than 100 ms\n"
+        "ahead, then resumed once the video catches up.\n"
+        "No pitch change — audio always plays at its natural speed.\n"
+        "Disable to let audio free-run independently.",
     )
 
     # ── Volume control (placed to the right of the +10s seek button) ──────
@@ -2157,11 +2159,13 @@ def _live_video_thread() -> None:
     changes take effect within one callback block (~46 ms at 44 100 Hz /
     2 048 frames) without any re-extraction, seek jump, or stutter.
 
-    When the "Sync" checkbox is enabled, the video thread measures the actual
-    total time per frame (inference + throttle sleep) and feeds an exponential
-    moving average of that FPS into ``_pcm_speed[0]`` on every frame.  The
-    callback then automatically adjusts pitch/tempo to keep audio and video
-    in lock-step in real time.  When Sync is disabled the speed stays at 1.0.
+    When the "Sync" checkbox is enabled, the video thread compares the current
+    audio head position (``_pcm_pos[0]``) against the expected position derived
+    from the current frame index.  If audio is more than 100 ms ahead of the
+    video (i.e. inference is slower than real-time), the audio stream is paused
+    until the video catches up, then resumed.  This keeps audio and video in
+    lock-step without any pitch change or re-extraction.  When Sync is disabled
+    the audio free-runs at 1.0×.
     """
     try:
         from ultralytics import YOLO as _YOLO
@@ -2197,7 +2201,6 @@ def _live_video_thread() -> None:
         frame_delay = max(0.001, 1.0 / fps)
         frame_idx = 0
         _audio_was_on = False   # track whether audio was active last iteration
-        _fps_ema = fps          # exponential moving average of actual FPS
 
         while not _live_video_cancel_flag[0]:
             # ── Read per-frame controls (take effect immediately) ──────────
@@ -2256,7 +2259,6 @@ def _live_video_thread() -> None:
             elif not audio_want and _audio_was_on:
                 _cleanup_live_audio()
                 _audio_was_on = False
-                _fps_ema = fps
             elif audio_want:
                 _audio_was_on = True
 
@@ -2303,13 +2305,19 @@ def _live_video_thread() -> None:
             total_frame_time = max(frame_proc_time, frame_delay)
             actual_fps = 1.0 / max(frame_proc_time, 0.001)  # shown in status bar
 
-            # ── Update PCM streaming speed in real-time ───────────────────
-            # Use an EMA of the total frame time so short spikes don't cause
-            # jarring audio pitch shifts.  Only update when sync is enabled.
+            # ── Keep audio aligned with current video frame position ──────────
+            # Compare where the audio head is against where it should be
+            # according to the current frame index.  When audio runs ahead
+            # (inference is slower than real-time) pause it; resume once the
+            # video has caught up.  This keeps sync without any pitch change.
             if audio_want and audio_sync and _pcm_stream is not None:
-                _fps_ema = 0.92 * _fps_ema + 0.08 * (1.0 / max(total_frame_time, 0.001))
-                speed_ratio = max(0.05, min(10.0, _fps_ema / fps))
-                _pcm_speed[0] = speed_ratio
+                expected_sample = int(frame_idx / fps * _PCM_SAMPLE_RATE)
+                drift_secs = (_pcm_pos[0] - expected_sample) / _PCM_SAMPLE_RATE
+                if drift_secs > 0.1:
+                    # Audio is more than 100 ms ahead – pause until video catches up
+                    _pcm_paused[0] = True
+                else:
+                    _pcm_paused[0] = False
 
             # Prepare display image
             img_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
