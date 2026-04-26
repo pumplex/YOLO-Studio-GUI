@@ -2048,7 +2048,7 @@ def show_live_video_window() -> None:
     task_lbl.place(relx=0.01, rely=0.56, relwidth=0.04, relheight=0.38)
     task_menu = ctk.CTkOptionMenu(
         bar, values=_LIVE_TASK_OPTIONS, variable=_live_video_task_var,
-        font=FONT, height=24,
+        font=FONT, height=24, corner_radius=4,
     )
     task_menu.place(relx=0.05, rely=0.56, relwidth=0.10, relheight=0.38)
     Tooltip(
@@ -2199,7 +2199,7 @@ def _live_video_thread() -> None:
         _device_controlled = True
         try:
             model.to(device)
-        except (RuntimeError, AttributeError):
+        except (RuntimeError, AttributeError, TypeError):
             # TensorRT (.engine) and ONNX models are compiled for a fixed device
             # and cannot be moved.  Skip device= in predict() calls too.
             _device_controlled = False
