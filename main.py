@@ -17,6 +17,16 @@ import subprocess
 import mimetypes
 from pathlib import Path
 from queue import Queue, Empty
+try:
+    import matplotlib as _mpl
+    _mpl.use("TkAgg")
+    from matplotlib.figure import Figure as _MplFigure
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg as _MplCanvas
+    _MPL_AVAILABLE = True
+except Exception:
+    _MPL_AVAILABLE = False
+    _MplFigure = None
+    _MplCanvas = None
 from datetime import datetime
 from src.train import create_yaml
 from src.detect import detect_images, is_valid_image, get_model_info, get_media_files
@@ -76,6 +86,14 @@ def _match_epoch(raw_line: str, stripped_line: str):
     """Return an epoch regex match from raw or stripped line, or None."""
     m = _EPOCH_RE.match(raw_line)
     return m if m else _EPOCH_RE.match(stripped_line)
+
+# Inner-epoch training progress: "66/300  4.63G  0.4752  0.9918  1.073  84  640: 7%"
+_EPOCH_INNER_TRAIN_RE = re.compile(
+    r'^(\d+)/(\d+)\s+\S+\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+\S+\s+\S+:\s*(\d+)%')
+
+# Validation progress: "Class  Images  Instances  Box(...): 3%"
+_EPOCH_INNER_VAL_RE = re.compile(
+    r'Class\s+Images\s+Instances.*?:\s*(\d+)%')
 
 mimetypes.init()
 
@@ -802,6 +820,33 @@ _detect_model_info_text   = ""    # last model-info label text
 _detect_progress_value    = 0.0   # last detection progress bar fraction
 _detect_progress_text     = ""    # last detection progress label text
 
+# ── Training secondary progress bar + loss graphs state ──────────────────────
+_train_epoch_bar             = None    # CTkProgressBar – inner epoch/val progress
+_train_epoch_bar_label       = None    # CTkLabel above inner bar
+_train_epoch_progress_value  = 0.0
+_train_epoch_progress_text   = ""
+_train_epoch_is_validation   = False   # True while tracking validation progress
+
+# Loss history (one entry per completed epoch)
+_train_loss_data           = {"box_loss": [], "cls_loss": [], "dfl_loss": []}
+# Per-metric line colours for graphs
+_LOSS_GRAPH_COLORS         = {"box_loss": "#a6e3a1", "cls_loss": "#89b4fa", "dfl_loss": "#f38ba8"}
+
+# Graph widget refs (reset on tab switch, re-created when Train tab opens)
+_train_loss_graph_frame    = None      # CTkTabview holding the three graphs
+_train_loss_graph_canvases = {}        # {loss_name: FigureCanvasTkAgg}
+_train_loss_graph_figs     = {}        # {loss_name: Figure}
+
+# Open larger-graph popup refs (persist across tab switches)
+_train_popup_refs          = {}        # {loss_name: (Toplevel, Figure, Axes, Canvas)}
+
+# Per-epoch timing state (for ETA calculation)
+_train_run_start_time    = None        # time.monotonic() when current run started
+_train_epoch_durations   = []          # seconds per completed epoch
+_train_last_epoch_start  = [None]      # [float|None] – monotonic time epoch N started
+_train_last_epoch_num    = [0]         # [int] – last epoch number seen
+_train_pending_losses    = [None]      # [(box,cls,dfl)|None] – last 100% values this epoch
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Embedded logo  (base64-encoded PNG, displayed in sidebar)
@@ -932,6 +977,8 @@ def on_sidebar_select(key: str) -> None:
     global _train_freeze_var, _train_lr0_var, _train_lrf_var
     global _train_momentum_var, _train_weight_decay_var, _train_optimizer_var
     global _train_val_var, _train_max_det_var, _train_max_det_widget
+    global _train_epoch_bar, _train_epoch_bar_label
+    global _train_loss_graph_frame, _train_loss_graph_canvases, _train_loss_graph_figs
 
     # Stop live video playback and clean up audio if running
     _live_video_cancel_flag[0] = True
@@ -980,6 +1027,11 @@ def on_sidebar_select(key: str) -> None:
     _train_freeze_var = _train_lr0_var = _train_lrf_var = None
     _train_momentum_var = _train_weight_decay_var = _train_optimizer_var = None
     _train_val_var = _train_max_det_var = _train_max_det_widget = None
+    _train_epoch_bar = None
+    _train_epoch_bar_label = None
+    _train_loss_graph_frame = None
+    _train_loss_graph_canvases = {}
+    _train_loss_graph_figs = {}
     _train_stop_btn_ref[0] = None
 
     if key == "Train":
@@ -1019,6 +1071,8 @@ def show_ai_train_window() -> None:
     global _train_val_var, _train_max_det_var, _train_max_det_widget
     global _train_data_btn_ref, _model_save_btn_ref, _custom_model_btn_ref
     global _train_stop_btn_ref
+    global _train_epoch_bar, _train_epoch_bar_label
+    global _train_loss_graph_frame, _train_loss_graph_canvases, _train_loss_graph_figs
 
     # ── Left: scrollable configuration panel ──────────────────────────────
     config_panel = ctk.CTkScrollableFrame(
@@ -1959,16 +2013,57 @@ def show_ai_train_window() -> None:
         log_panel, text="Training Output", font=("Segoe UI", 14, "bold")
     ).pack(anchor="w", padx=12, pady=(10, 4))
 
+    # Fixed column headers matching Ultralytics training output format
+    ctk.CTkLabel(
+        log_panel,
+        text="  Epoch    GPU_mem   box_loss   cls_loss   dfl_loss  Instances       Size",
+        font=("Courier New", 10),
+        text_color="#6c7086",
+        anchor="w",
+    ).pack(fill="x", padx=12, pady=(0, 0))
+
     output_textbox = ctk.CTkTextbox(
-        log_panel, font=("Courier New", 12), corner_radius=8
+        log_panel, font=("Courier New", 12), corner_radius=8, height=180
     )
-    output_textbox.pack(fill="both", expand=True, padx=12, pady=(0, 4))
+    output_textbox.pack(fill="x", padx=12, pady=(0, 4))
 
     # Restore any training log that was produced before this tab was loaded
     if _train_log_buffer:
         output_textbox.insert("1.0", "".join(_train_log_buffer))
         output_textbox.yview_moveto(1)
 
+    # ── Loss graphs (CTkTabview with one tab per metric) ───────────────────
+    _train_loss_graph_canvases = {}
+    _train_loss_graph_figs = {}
+    _train_loss_graph_frame = ctk.CTkTabview(log_panel, height=200)
+    _train_loss_graph_frame.pack(fill="both", expand=True, padx=12, pady=(4, 4))
+
+    for _loss_name in ("box_loss", "cls_loss", "dfl_loss"):
+        _tab = _train_loss_graph_frame.add(_loss_name)
+        _create_loss_graph_in_tab(_tab, _loss_name)
+
+    # Populate graphs with any data from a previous (or still-running) training run
+    _refresh_all_loss_graphs()
+
+    # ── Secondary progress bar (inner-epoch training or validation) ─────────
+    _train_epoch_bar_label = ctk.CTkLabel(
+        log_panel,
+        text=_train_epoch_progress_text,
+        font=("Segoe UI", 11),
+        text_color="#89b4fa",
+        anchor="w",
+    )
+    _train_epoch_bar_label.pack(anchor="w", padx=12)
+
+    _train_epoch_bar = ctk.CTkProgressBar(
+        log_panel,
+        progress_color="#f9a825" if _train_epoch_is_validation else "#1e88e5",
+        mode="determinate",
+    )
+    _train_epoch_bar.set(_train_epoch_progress_value)
+    _train_epoch_bar.pack(fill="x", padx=12, pady=(2, 6))
+
+    # ── Main epoch progress bar (green) ─────────────────────────────────────
     train_progress_label = ctk.CTkLabel(
         log_panel, text=_train_progress_text, font=("Segoe UI", 11), text_color="#a6adc8", anchor="w",
     )
@@ -4505,16 +4600,200 @@ def _stop_training() -> None:
         output_queue.put("\n⚠ No training process is currently running.\n")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Training helpers – ETA, loss graphs, inner-epoch progress
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _format_eta(seconds: float) -> str:
+    """Format a duration in seconds to a human-readable ETA string."""
+    if seconds <= 0:
+        return ""
+    s = int(seconds)
+    days, rem = divmod(s, 86400)
+    hours, rem2 = divmod(rem, 3600)
+    mins, secs = divmod(rem2, 60)
+    if days > 0:
+        return f"ETA: {days}d {hours}hrs {mins}min"
+    if hours > 0:
+        return f"ETA: {hours}hrs {mins}min"
+    if mins > 0:
+        return f"ETA: {mins}min {secs}s"
+    return f"ETA: {secs}s"
+
+
+def _draw_loss_graph_on_ax(ax, loss_name: str, compact: bool = True) -> None:
+    """Draw the loss time-series onto *ax* (cleared first)."""
+    BG   = "#1e1e2e"
+    AXIS = "#2a2a3e"
+    TXT  = "white"
+    color = _LOSS_GRAPH_COLORS.get(loss_name, "#cba6f7")
+
+    ax.cla()
+    ax.set_facecolor(AXIS)
+    ax.tick_params(colors=TXT, labelsize=6 if compact else 9)
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#45475a")
+    ax.set_title(loss_name, color=TXT, fontsize=8 if compact else 12, pad=3)
+    ax.set_xlabel("Epoch", color=TXT, fontsize=6 if compact else 10)
+    ax.yaxis.label.set_color(TXT)
+
+    values = _train_loss_data.get(loss_name, [])
+    if values:
+        xs = list(range(1, len(values) + 1))
+        ax.plot(xs, values, color=color,
+                linewidth=1.2 if compact else 2.0,
+                marker='o', markersize=2 if compact else 5)
+        ax.set_xlim(left=1)
+
+
+def _create_loss_graph_in_tab(parent_frame, loss_name: str) -> None:
+    """Embed a small matplotlib chart inside *parent_frame* for the given loss."""
+    if not _MPL_AVAILABLE:
+        ctk.CTkLabel(parent_frame, text="matplotlib not available").pack()
+        return
+
+    BG  = "#1e1e2e"
+    fig = _MplFigure(figsize=(3, 1.8), dpi=85, facecolor=BG)
+    fig.subplots_adjust(left=0.12, right=0.97, top=0.85, bottom=0.20)
+    ax = fig.add_subplot(111)
+    _draw_loss_graph_on_ax(ax, loss_name, compact=True)
+
+    canvas = _MplCanvas(fig, master=parent_frame)
+    canvas.draw()
+    widget = canvas.get_tk_widget()
+    widget.pack(fill="both", expand=True)
+    widget.bind("<Button-1>", lambda _e, n=loss_name: _open_loss_graph_popup(n))
+
+    _train_loss_graph_figs[loss_name]     = fig
+    _train_loss_graph_canvases[loss_name] = canvas
+
+
+def _refresh_single_loss_graph(loss_name: str) -> None:
+    """Redraw the embedded graph and any open popup for *loss_name*."""
+    # Embedded graph
+    fig    = _train_loss_graph_figs.get(loss_name)
+    canvas = _train_loss_graph_canvases.get(loss_name)
+    if fig is not None and canvas is not None:
+        try:
+            if canvas.get_tk_widget().winfo_exists():
+                ax = fig.axes[0] if fig.axes else fig.add_subplot(111)
+                _draw_loss_graph_on_ax(ax, loss_name, compact=True)
+                canvas.draw()
+        except Exception:
+            pass
+
+    # Open popup (if any)
+    popup_info = _train_popup_refs.get(loss_name)
+    if popup_info:
+        win, pfig, pax, pcanvas = popup_info
+        try:
+            if win.winfo_exists():
+                _draw_loss_graph_on_ax(pax, loss_name, compact=False)
+                pcanvas.draw()
+            else:
+                _train_popup_refs.pop(loss_name, None)
+        except Exception:
+            _train_popup_refs.pop(loss_name, None)
+
+
+def _refresh_all_loss_graphs() -> None:
+    """Redraw all three embedded loss graphs (and any open popups)."""
+    for name in ("box_loss", "cls_loss", "dfl_loss"):
+        _refresh_single_loss_graph(name)
+
+
+def _open_loss_graph_popup(loss_name: str) -> None:
+    """Open (or raise) a larger popup window for the named loss graph."""
+    if not _MPL_AVAILABLE:
+        return
+
+    # If already open, raise it
+    existing = _train_popup_refs.get(loss_name)
+    if existing:
+        win = existing[0]
+        try:
+            if win.winfo_exists():
+                win.lift()
+                win.focus_force()
+                return
+        except Exception:
+            pass
+        _train_popup_refs.pop(loss_name, None)
+
+    BG  = "#1e1e2e"
+    win = tk.Toplevel(root)
+    win.title(f"{loss_name} – Training History")
+    win.geometry("720x420")
+    win.configure(bg=BG)
+
+    pfig = _MplFigure(figsize=(7.2, 4.0), dpi=100, facecolor=BG)
+    pfig.subplots_adjust(left=0.09, right=0.97, top=0.88, bottom=0.12)
+    pax  = pfig.add_subplot(111)
+    _draw_loss_graph_on_ax(pax, loss_name, compact=False)
+
+    pcanvas = _MplCanvas(pfig, master=win)
+    pcanvas.draw()
+    pcanvas.get_tk_widget().pack(fill="both", expand=True, padx=6, pady=6)
+
+    _train_popup_refs[loss_name] = (win, pfig, pax, pcanvas)
+
+    def _on_close():
+        _train_popup_refs.pop(loss_name, None)
+        win.destroy()
+
+    win.protocol("WM_DELETE_WINDOW", _on_close)
+
+
+def _update_epoch_inner_progress(pct: int, is_validation: bool,
+                                  box: float = None, cls_: float = None,
+                                  dfl: float = None) -> None:
+    """Update the secondary (inner-epoch) progress bar on the main thread."""
+    global _train_epoch_progress_value, _train_epoch_progress_text, _train_epoch_is_validation
+    _train_epoch_is_validation   = is_validation
+    frac = min(pct / 100.0, 1.0)
+    _train_epoch_progress_value  = frac
+    _train_epoch_progress_text   = ("Validation" if is_validation else "Training") + f"  {pct}%"
+
+    bar   = _train_epoch_bar
+    label = _train_epoch_bar_label
+    if bar is None:
+        return
+    try:
+        if not bar.winfo_exists():
+            return
+        bar.configure(progress_color="#f9a825" if is_validation else "#1e88e5")
+        bar.set(frac)
+        if label:
+            try:
+                label.configure(text=_train_epoch_progress_text)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def _run_training_subprocess(
     yaml_path: str, selected_model_size: str, workers_int: int = 8,
     extra_params: dict = None,
 ) -> None:
     global progress_bar, output_textbox, _train_log_buffer, _train_progress_value, _train_progress_text
+    global _train_loss_data, _train_run_start_time, _train_epoch_durations
+    global _train_epoch_progress_value, _train_epoch_progress_text, _train_epoch_is_validation
 
     # Clear the log buffer so previous training runs don't accumulate indefinitely
     _train_log_buffer.clear()
     _train_progress_value = 0.0
     _train_progress_text  = ""
+    _train_epoch_progress_value = 0.0
+    _train_epoch_progress_text  = ""
+    _train_epoch_is_validation  = False
+    _train_loss_data        = {"box_loss": [], "cls_loss": [], "dfl_loss": []}
+    _train_run_start_time   = time.monotonic()
+    _train_epoch_durations  = []
+    _train_last_epoch_num[0]   = 0
+    _train_last_epoch_start[0] = None
+    _train_pending_losses[0]   = None
+    root.after(0, _refresh_all_loss_graphs)
 
     extra_json = json.dumps(extra_params or {})
 
@@ -4549,9 +4828,36 @@ def _run_training_subprocess(
         try:
             if not progress_bar.winfo_exists():
                 return
+
+            # Detect epoch change → commit losses + record timing
+            if current_ep != _train_last_epoch_num[0]:
+                now = time.monotonic()
+                # Commit losses from the epoch that just finished
+                if _train_last_epoch_num[0] > 0 and _train_pending_losses[0] is not None:
+                    box_v, cls_v, dfl_v = _train_pending_losses[0]
+                    _train_loss_data["box_loss"].append(box_v)
+                    _train_loss_data["cls_loss"].append(cls_v)
+                    _train_loss_data["dfl_loss"].append(dfl_v)
+                    root.after(0, _refresh_all_loss_graphs)
+                # Record how long the epoch took
+                if _train_last_epoch_start[0] is not None:
+                    dur = now - _train_last_epoch_start[0]
+                    _train_epoch_durations.append(dur)
+                _train_last_epoch_start[0] = now
+                _train_last_epoch_num[0] = current_ep
+                _train_pending_losses[0] = None
+
             frac = current_ep / max(total_ep, 1)
             _train_progress_value = frac
-            _train_progress_text = f"Epoch {current_ep} / {total_ep}  ({frac * 100:.0f}%)"
+
+            # Compute ETA
+            eta_str = ""
+            if _train_epoch_durations:
+                avg_dur = sum(_train_epoch_durations) / len(_train_epoch_durations)
+                remaining = total_ep - current_ep
+                eta_str = "  " + _format_eta(remaining * avg_dur)
+
+            _train_progress_text = f"Epoch {current_ep} / {total_ep}  ({frac * 100:.0f}%){eta_str}"
             progress_bar.set(frac)
             lbl = getattr(progress_bar, "_progress_label", None)
             if lbl:
@@ -4595,6 +4901,28 @@ def _run_training_subprocess(
                     ep_cur = int(m.group(1))
                     ep_tot = int(m.group(2))
                     root.after(0, lambda c=ep_cur, t=ep_tot: _update_train_progress(c, t))
+
+                # Inner-epoch training progress (includes loss values)
+                m_train = _EPOCH_INNER_TRAIN_RE.match(line)
+                if m_train:
+                    pct = int(m_train.group(6))
+                    try:
+                        box_v = float(m_train.group(3))
+                        cls_v = float(m_train.group(4))
+                        dfl_v = float(m_train.group(5))
+                    except (ValueError, IndexError):
+                        box_v = cls_v = dfl_v = None
+                    if pct == 100 and box_v is not None:
+                        _train_pending_losses[0] = (box_v, cls_v, dfl_v)
+                    root.after(0, lambda p=pct, b=box_v, c=cls_v, d=dfl_v:
+                               _update_epoch_inner_progress(p, False, b, c, d))
+                    continue
+
+                # Validation progress
+                m_val = _EPOCH_INNER_VAL_RE.search(line)
+                if m_val:
+                    pct = int(m_val.group(1))
+                    root.after(0, lambda p=pct: _update_epoch_inner_progress(p, True))
             proc.stdout.close()
 
         threading.Thread(target=_reader, daemon=True).start()
@@ -4613,6 +4941,7 @@ def _run_training_subprocess(
 
 def _training_finished() -> None:
     global progress_bar, output_textbox, _train_progress_value, _train_progress_text
+    global _train_epoch_progress_value, _train_epoch_progress_text
     _train_progress_value = 1.0
     _train_progress_text = "Training complete ✅"
     if progress_bar:
@@ -4623,6 +4952,27 @@ def _training_finished() -> None:
                 lbl.configure(text=_train_progress_text)
         except Exception:
             pass
+
+    # Reset secondary progress bar
+    _train_epoch_progress_value = 0.0
+    _train_epoch_progress_text  = ""
+    if _train_epoch_bar is not None:
+        try:
+            _train_epoch_bar.set(0)
+            if _train_epoch_bar_label is not None:
+                _train_epoch_bar_label.configure(text="")
+        except Exception:
+            pass
+
+    # Commit any pending losses from the final epoch
+    if _train_pending_losses[0] is not None:
+        box_v, cls_v, dfl_v = _train_pending_losses[0]
+        _train_loss_data["box_loss"].append(box_v)
+        _train_loss_data["cls_loss"].append(cls_v)
+        _train_loss_data["dfl_loss"].append(dfl_v)
+        _train_pending_losses[0] = None
+        _refresh_all_loss_graphs()
+
     done_msg = "\n✅ Training process finished.\n"
     _train_log_buffer.append(done_msg)
     try:
