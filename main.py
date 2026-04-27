@@ -2992,7 +2992,8 @@ def _start_benchmark(img_size_entry, split_var, yaml_ref, folder_ref) -> None:
         return msg
 
     def run_all():
-        import tempfile, os as _os
+        import tempfile
+        import os as _os
         from ultralytics import YOLO
         all_metrics = []
         _tmp_yamls: list[str] = []   # temp files to clean up after all runs
@@ -3008,6 +3009,8 @@ def _start_benchmark(img_size_entry, split_var, yaml_ref, folder_ref) -> None:
                     root_p = Path(folder_path)
                     available = _detect_folder_splits(root_p)
 
+                    # Fall back to COCO-like default (80 classes) when the model
+                    # doesn't expose a names attribute (e.g. some TRT engines).
                     model_nc    = len(model.names) if hasattr(model, "names") else 80
                     model_names = list(model.names.values()) if hasattr(model, "names") else []
 
@@ -3165,7 +3168,7 @@ def _detect_yaml_dataset_splits(yaml_path: str) -> dict:
         splits = _detect_folder_splits(root)
         return {k: splits.get(k, False) for k in ("test", "valid", "train")}
     except Exception:
-        return {"test": False, "valid": True, "train": True}
+        return {"test": False, "valid": False, "train": False}
 
 
 def _build_folder_benchmark_yaml(
