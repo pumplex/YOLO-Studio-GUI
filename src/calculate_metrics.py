@@ -1,4 +1,4 @@
-"""Precision、Recall、F値の算出コード
+"""Precision、Recall、F-measure/F1-score
 """
 
 import os
@@ -11,13 +11,13 @@ import cv2
 import random
 from typing import Dict, List, Tuple
 
-# 評価用のパラメータ設定
-DATASET_DIR = r"C:\Users\he81t\ubuntu\images\green_soybeans\shonai1_test_data"  # データセットのディレクトリ
-MODEL_PATH = r"C:\Users\he81t\ubuntu\images\green_soybeans\shonai3_models\weights\best.pt"  # YOLOモデルのパス
-CONF_THRESHOLD = 0.5  # 確信度のしきい値
+# Settings/Config
+DATASET_DIR = r"C:\Users\he81t\ubuntu\images\green_soybeans\shonai1_test_data"  # Dataset directory
+MODEL_PATH = r"C:\Users\he81t\ubuntu\images\green_soybeans\shonai3_models\weights\best.pt"  # YOLO model path
+CONF_THRESHOLD = 0.5  # confidence threshold
 
 def create_output_dirs():
-    """出力用のディレクトリを作成"""
+    """Create Output Folder"""
     base_dir = Path(DATASET_DIR) / "test_results"
     detect_dir = base_dir / "detection_images"
     
@@ -27,7 +27,7 @@ def create_output_dirs():
     return base_dir, detect_dir
 
 def generate_colors(num_classes: int) -> Dict[int, Tuple[int, int, int]]:
-    """分類クラスごとに固定のRGBカラーを生成"""
+    """Generate a fixed RGB color for each classification class"""
     random.seed(42)
     colors = {}
     for i in range(num_classes):
@@ -39,7 +39,7 @@ def generate_colors(num_classes: int) -> Dict[int, Tuple[int, int, int]]:
     return colors
 
 def calculate_iou(box1, box2):
-    """2つのバウンディングボックス間のIoUを計算"""
+    """Calculate the IoU between two bounding boxes"""
     # Convert to (x1, y1, x2, y2) format
     b1_x1, b1_y1 = box1[0] - box1[2]/2, box1[1] - box1[3]/2
     b1_x2, b1_y2 = box1[0] + box1[2]/2, box1[1] + box1[3]/2
@@ -64,7 +64,7 @@ def calculate_iou(box1, box2):
     return inter_area / (b1_area + b2_area - inter_area)
 
 def evaluate_detection(gt_boxes, gt_classes, pred_boxes, pred_classes, iou_threshold=0.5):
-    """検出結果の評価を行い、Precision、Recall、F値を計算"""
+    """The detection results are evaluated, and Precision, Recall, and F-score are calculated."""
     if len(pred_boxes) == 0:
         if len(gt_boxes) == 0:
             return 1.0, 1.0, 1.0
@@ -85,7 +85,7 @@ def evaluate_detection(gt_boxes, gt_classes, pred_boxes, pred_classes, iou_thres
                 continue
                 
             iou = calculate_iou(pred, gt)
-            # クラスが一致し、かつIoUが閾値以上の場合のみ考慮
+            # Only cases where the class matches and the IoU is above the threshold will be considered
             if iou > best_iou and pred_classes[pred_idx] == gt_classes[i]:
                 best_iou = iou
                 best_gt_idx = i
@@ -113,7 +113,7 @@ def main():
     base_dir, detect_dir = create_output_dirs()
     image_files = [f for f in os.listdir(DATASET_DIR) if f.endswith(('.jpg', '.jpeg', '.png'))]
     
-    # 検出数カウント用のデータフレーム作成
+    # Create a data frame for counting the number of detections
     detection_counts = []
     
     total_precision = 0
@@ -140,7 +140,7 @@ def main():
         pred_boxes = []
         pred_classes = []
         
-        # 各クラスの検出数をカウント
+        # Count the number of detections for each class
         class_counts = {i: 0 for i in range(num_classes)}
         
         for box in results.boxes:
@@ -152,7 +152,7 @@ def main():
             conf = float(box.conf[0])
             color = class_colors[class_id]
             
-            # 検出数カウント
+            # Detection count
             class_counts[class_id] += 1
             
             norm_x = x / img.shape[1]
@@ -177,7 +177,7 @@ def main():
                         color, 
                         2)
         
-        # 検出数カウントをリストに追加
+        # Add detection count to list
         detection_count = [img_file] + [class_counts[i] for i in range(num_classes)]
         detection_counts.append(detection_count)
         
@@ -195,7 +195,7 @@ def main():
             for i, box in enumerate(pred_boxes):
                 f.write(f"{pred_classes[i]} {' '.join(map(str, box))}\n")
     
-    # 検出数をCSVに保存
+    # Save the number of detections to a CSV file.
     detection_csv_path = base_dir / "num_of_detections.csv"
     with open(detection_csv_path, 'w', newline='') as f:
         writer = csv.writer(f)
