@@ -1081,11 +1081,11 @@ def show_ai_train_window() -> None:
         label_font=("Segoe UI", 14, "bold"),
         corner_radius=8,
     )
-    config_panel.place(relx=0, rely=0, relwidth=0.41, relheight=1.0)
+    config_panel.place(relx=0, rely=0, relwidth=0.37, relheight=1.0)
 
     # ── Right: log / output panel ──────────────────────────────────────────
     log_panel = ctk.CTkFrame(master=main_frame, corner_radius=8)
-    log_panel.place(relx=0.42, rely=0, relwidth=0.58, relheight=1.0)
+    log_panel.place(relx=0.38, rely=0, relwidth=0.62, relheight=1.0)
 
     PAD  = {"padx": 14, "pady": 5}
     FLAB = ("Segoe UI", 13)
@@ -1916,6 +1916,64 @@ def show_ai_train_window() -> None:
         if _train_max_det_var is not None:
             _train_max_det_var.set(str(cfg.get("max_det", 300)))
 
+        # ── Path fields ───────────────────────────────────────────────────
+        # Restore train_data_path
+        saved_train_data = cfg.get("train_data_path", "")
+        if saved_train_data:
+            global train_data_path
+            train_data_path = saved_train_data
+            short = Path(saved_train_data).name or saved_train_data
+            _safe_label_configure(train_data_label, text=short, text_color="#4caf50")
+            if _train_data_btn_ref[0]:
+                try:
+                    _train_data_btn_ref[0].configure(fg_color="#2e7d32", hover_color="#1b5e20")
+                except Exception:
+                    pass
+
+        # Restore model_save_path
+        saved_model_save = cfg.get("model_save_path", "")
+        if saved_model_save:
+            global model_save_path
+            model_save_path = saved_model_save
+            short = Path(saved_model_save).name or saved_model_save
+            _safe_label_configure(model_save_label, text=short, text_color="#4caf50")
+            if _model_save_btn_ref[0]:
+                try:
+                    _model_save_btn_ref[0].configure(fg_color="#2e7d32", hover_color="#1b5e20")
+                except Exception:
+                    pass
+
+        # Restore custom_model_path
+        saved_custom = cfg.get("custom_model_path", "")
+        if saved_custom:
+            global custom_model_path
+            custom_model_path = saved_custom
+            _safe_label_configure(
+                custom_model_label,
+                text=f"Custom: {Path(saved_custom).name}",
+                text_color="#64b5f6",
+            )
+            if _custom_model_btn_ref[0]:
+                try:
+                    _custom_model_btn_ref[0].configure(fg_color="#2e7d32", hover_color="#1b5e20")
+                except Exception:
+                    pass
+
+        # Restore roboflow_yaml_path
+        saved_rf_yaml = cfg.get("roboflow_yaml", "")
+        if saved_rf_yaml:
+            global roboflow_yaml_path
+            roboflow_yaml_path = saved_rf_yaml
+            if _train_rf_status_label is not None:
+                try:
+                    _safe_label_configure(
+                        _train_rf_status_label,
+                        text=f"Loaded: {Path(saved_rf_yaml).name}",
+                        text_color="#64b5f6",
+                    )
+                except Exception:
+                    pass
+
         messagebox.showinfo(
             "Configuration Loaded",
             f"Training configuration loaded from:\n{path}",
@@ -2023,7 +2081,7 @@ def show_ai_train_window() -> None:
     ).pack(fill="x", padx=12, pady=(0, 0))
 
     output_textbox = ctk.CTkTextbox(
-        log_panel, font=("Courier New", 12), corner_radius=8, height=180
+        log_panel, font=("Courier New", 12), corner_radius=8, height=240
     )
     output_textbox.pack(fill="x", padx=12, pady=(0, 4))
 
@@ -2035,7 +2093,7 @@ def show_ai_train_window() -> None:
     # ── Loss graphs (CTkTabview with one tab per metric) ───────────────────
     _train_loss_graph_canvases = {}
     _train_loss_graph_figs = {}
-    _train_loss_graph_frame = ctk.CTkTabview(log_panel, height=200)
+    _train_loss_graph_frame = ctk.CTkTabview(log_panel, height=160)
     _train_loss_graph_frame.pack(fill="both", expand=True, padx=12, pady=(4, 4))
 
     for _loss_name in ("box_loss", "cls_loss", "dfl_loss"):
@@ -4621,6 +4679,52 @@ def _format_eta(seconds: float) -> str:
     return f"ETA: {secs}s"
 
 
+def _load_results_csv_into_graphs(project_name_: str) -> bool:
+    """Pre-populate loss graphs from runs/.../results.csv for a given project.
+
+    Looks for results.csv under any known task sub-directory.
+    Returns True if data was loaded, False otherwise.
+    Columns used: index 2=box_loss, 3=cls_loss, 4=dfl_loss (0-based).
+    """
+    runs_base = Path("runs")
+    csv_path = None
+    for task_dir in ("detect", "segment", "classify", "pose", "obb", "train"):
+        candidate = runs_base / task_dir / project_name_ / "results.csv"
+        if candidate.exists():
+            csv_path = candidate
+            break
+
+    if csv_path is None:
+        return False
+
+    try:
+        box_vals, cls_vals, dfl_vals = [], [], []
+        with open(csv_path, "r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+        # First line is header; subsequent lines are epoch data
+        for raw in lines[1:]:
+            raw = raw.strip()
+            if not raw:
+                continue
+            parts = [p.strip() for p in raw.split(",")]
+            if len(parts) < 5:
+                continue
+            try:
+                box_vals.append(float(parts[2]))
+                cls_vals.append(float(parts[3]))
+                dfl_vals.append(float(parts[4]))
+            except (ValueError, IndexError):
+                pass
+        if not box_vals:
+            return False
+        _train_loss_data["box_loss"] = box_vals
+        _train_loss_data["cls_loss"] = cls_vals
+        _train_loss_data["dfl_loss"] = dfl_vals
+        return True
+    except Exception:
+        return False
+
+
 def _draw_loss_graph_on_ax(ax, loss_name: str, compact: bool = True) -> None:
     """Draw the loss time-series onto *ax* (cleared first)."""
     BG   = "#1e1e2e"
@@ -4630,20 +4734,58 @@ def _draw_loss_graph_on_ax(ax, loss_name: str, compact: bool = True) -> None:
 
     ax.cla()
     ax.set_facecolor(AXIS)
-    ax.tick_params(colors=TXT, labelsize=6 if compact else 9)
+    ax.tick_params(colors=TXT, labelsize=9)
     for spine in ax.spines.values():
         spine.set_edgecolor("#45475a")
-    ax.set_title(loss_name, color=TXT, fontsize=8 if compact else 12, pad=3)
-    ax.set_xlabel("Epoch", color=TXT, fontsize=6 if compact else 10)
+    ax.set_title(loss_name, color=TXT, fontsize=11, pad=3)
+    ax.set_xlabel("Epoch", color=TXT, fontsize=9)
     ax.yaxis.label.set_color(TXT)
 
     values = _train_loss_data.get(loss_name, [])
     if values:
         xs = list(range(1, len(values) + 1))
-        ax.plot(xs, values, color=color,
+        line, = ax.plot(xs, values, color=color,
                 linewidth=1.2 if compact else 2.0,
-                marker='o', markersize=2 if compact else 5)
+                marker='o', markersize=4 if compact else 6)
         ax.set_xlim(left=1)
+
+        # Hover annotations – show exact value when cursor is near a point
+        annot = ax.annotate(
+            "", xy=(0, 0), xytext=(8, 8), textcoords="offset points",
+            bbox=dict(boxstyle="round,pad=0.3", fc="#313244", ec=color, lw=1),
+            arrowprops=dict(arrowstyle="->", color=color),
+            fontsize=8 if compact else 10, color=TXT,
+        )
+        annot.set_visible(False)
+
+        def _on_move(event, _ax=ax, _line=line, _annot=annot, _xs=xs, _vals=values):
+            if event.inaxes != _ax:
+                if _annot.get_visible():
+                    _annot.set_visible(False)
+                    _ax.figure.canvas.draw_idle()
+                return
+            cont, ind = _line.contains(event)
+            if cont:
+                idx = ind["ind"][0]
+                x_val = _xs[idx]
+                y_val = _vals[idx]
+                _annot.xy = (x_val, y_val)
+                _annot.set_text(f"Epoch {x_val}\n{y_val:.5g}")
+                _annot.set_visible(True)
+                _ax.figure.canvas.draw_idle()
+            else:
+                if _annot.get_visible():
+                    _annot.set_visible(False)
+                    _ax.figure.canvas.draw_idle()
+
+        # Store the connection id on the figure so we can disconnect on redraw
+        fig = ax.figure
+        if hasattr(fig, '_loss_hover_cid'):
+            try:
+                fig.canvas.mpl_disconnect(fig._loss_hover_cid)
+            except Exception:
+                pass
+        fig._loss_hover_cid = fig.canvas.mpl_connect("motion_notify_event", _on_move)
 
 
 def _create_loss_graph_in_tab(parent_frame, loss_name: str) -> None:
@@ -4653,15 +4795,15 @@ def _create_loss_graph_in_tab(parent_frame, loss_name: str) -> None:
         return
 
     BG  = "#1e1e2e"
-    fig = _MplFigure(figsize=(3, 1.8), dpi=85, facecolor=BG)
-    fig.subplots_adjust(left=0.12, right=0.97, top=0.85, bottom=0.20)
+    fig = _MplFigure(figsize=(3, 1.6), dpi=90, facecolor=BG)
+    fig.subplots_adjust(left=0.14, right=0.97, top=0.84, bottom=0.24)
     ax = fig.add_subplot(111)
     _draw_loss_graph_on_ax(ax, loss_name, compact=True)
 
     canvas = _MplCanvas(fig, master=parent_frame)
     canvas.draw()
     widget = canvas.get_tk_widget()
-    widget.pack(fill="both", expand=True)
+    widget.pack(expand=True)
     widget.bind("<Button-1>", lambda _e, n=loss_name: _open_loss_graph_popup(n))
 
     _train_loss_graph_figs[loss_name]     = fig
@@ -4754,6 +4896,17 @@ def _update_epoch_inner_progress(pct: int, is_validation: bool,
     _train_epoch_progress_value  = frac
     _train_epoch_progress_text   = ("Validation" if is_validation else "Training") + f"  {pct}%"
 
+    # When the training phase of an epoch reaches 100%, immediately commit the
+    # loss values and refresh graphs – BEFORE validation begins.
+    if not is_validation and pct == 100 and box is not None:
+        _train_pending_losses[0] = (box, cls_, dfl)
+        _train_loss_data["box_loss"].append(box)
+        _train_loss_data["cls_loss"].append(cls_)
+        _train_loss_data["dfl_loss"].append(dfl)
+        # Mark as already committed so _update_train_progress won't re-add
+        _train_pending_losses[0] = None
+        _refresh_all_loss_graphs()
+
     bar   = _train_epoch_bar
     label = _train_epoch_bar_label
     if bar is None:
@@ -4793,14 +4946,19 @@ def _run_training_subprocess(
     _train_last_epoch_num[0]   = 0
     _train_last_epoch_start[0] = None
     _train_pending_losses[0]   = None
+
+    # If resuming, pre-populate graphs from the existing results.csv
+    resume_ckpt = (extra_params or {}).get('resume_checkpoint', '')
+    if resume_ckpt:
+        loaded = _load_results_csv_into_graphs(project_name)
+        if loaded:
+            output_queue.put(
+                f"📊 Loaded {len(_train_loss_data['box_loss'])} epoch(s) of loss data "
+                f"from results.csv for '{project_name}'\n"
+            )
     root.after(0, _refresh_all_loss_graphs)
 
     extra_json = json.dumps(extra_params or {})
-
-    # When resuming, the model file must be the checkpoint (last.pt), not the
-    # original pre-trained weights.  Ultralytics requires:
-    #   YOLO("last.pt").train(resume=True)
-    resume_ckpt = (extra_params or {}).get('resume_checkpoint', '')
     effective_custom_model = resume_ckpt if resume_ckpt else custom_model_path
 
     cmd = [
