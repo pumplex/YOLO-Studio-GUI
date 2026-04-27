@@ -462,7 +462,7 @@ class Tooltip:
             fg_color="transparent",
         ).pack(padx=10, pady=7)
 
-        # Measure the popup, then clamp it inside the screen.
+        # Measure the popup, then clamp it to the monitor the widget is on.
         tip.update_idletasks()
         tw = tip.winfo_reqwidth()
         th = tip.winfo_reqheight()
@@ -471,8 +471,16 @@ class Tooltip:
         y = wy + wh + 4
         if y + th > sh - 8:          # not enough room below → flip above
             y = wy - th - 4
-        y = max(8, y)
-        x = max(8, min(x, sw - tw - 8))
+
+        # Clamp without assuming the monitor starts at x=0 / y=0.
+        # wx/wy are absolute screen coordinates and may be negative when the
+        # app is on a secondary monitor positioned to the left of the primary.
+        # We compute the monitor's virtual origin from the widget position so
+        # the tooltip stays near the widget rather than being pulled to x=8.
+        mon_x = wx - (wx % sw) if sw else 0   # left edge of widget's monitor
+        mon_y = 0
+        x = max(mon_x + 8, min(x, mon_x + sw - tw - 8))
+        y = max(mon_y + 8, y)
 
         tip.wm_geometry(f"+{x}+{y}")
         self._fade_in(tip, 0)
@@ -729,6 +737,7 @@ _train_stop_btn_ref      = [None]    # [CTkButton] stop training button
 
 # Browse-button last-dir memory and button references
 _browse_last_dirs        = {}     # key → last visited directory string
+_train_cfg_last_dir      = [None] # [str|None] last dir for save/load config dialogs
 _train_data_btn_ref      = [None]
 _model_save_btn_ref      = [None]
 _custom_model_btn_ref    = [None]
@@ -1634,6 +1643,7 @@ def show_ai_train_window() -> None:
         cls     = [n.strip() for n in raw_cls.splitlines() if n.strip()]
         sel_disp  = selected_model_var.get() if selected_model_var else ""
         sel_model = MODEL_MAP.get(sel_disp, "")
+        task      = task_type_var.get() if task_type_var else "Detection"
         extra = _collect_extra_params(wk)
         return {
             "project_name":      pname,
@@ -1643,6 +1653,7 @@ def show_ai_train_window() -> None:
             "workers":           wk,
             "class_names":       cls,
             "selected_model":    sel_model,
+            "task_type":         task,
             "custom_model_path": custom_model_path,
             "train_data_path":   train_data_path,
             "model_save_path":   model_save_path,
@@ -1716,7 +1727,171 @@ def show_ai_train_window() -> None:
     ).pack(side="left", expand=True, fill="x", padx=(4, 0))
     _sep()
 
-    # ── Start / Stop / Queue-Run buttons ──────────────────────────────────
+    # ── Save / Load training configuration ────────────────────────────────
+    def _default_cfg_dir() -> str:
+        """Return the last-used config dir, falling back to the user's Documents."""
+        if _train_cfg_last_dir[0]:
+            return _train_cfg_last_dir[0]
+        docs = Path.home() / "Documents"
+        return str(docs) if docs.exists() else str(Path.home())
+
+    def _save_train_config():
+        """Serialise all Training Configuration settings to a JSON file."""
+        pname = project_name_entry.get().strip()
+        slug  = re.sub(r"\s+", "-", pname).lower() if pname else "untitled"
+        ts    = datetime.now().strftime("%Y%m%d-%H%M")
+        default_name = f"ystraining-{slug}-{ts}.json"
+
+        path = filedialog.asksaveasfilename(
+            title="Save Training Configuration",
+            initialdir=_default_cfg_dir(),
+            initialfile=default_name,
+            defaultextension=".json",
+            filetypes=[("YOLO Studio config", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        _train_cfg_last_dir[0] = str(Path(path).parent)
+
+        cfg = _get_current_job_config()
+        # Also persist paths (not included in the queue job config)
+        cfg["train_data_path"] = train_data_path
+        cfg["model_save_path"] = model_save_path
+        cfg["custom_model_path"] = custom_model_path
+        cfg["roboflow_yaml"] = roboflow_yaml_path
+        # Flatten extra_params into top-level for readability
+        cfg.update(cfg.pop("extra_params", {}))
+
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(cfg, fh, indent=2, ensure_ascii=False)
+            messagebox.showinfo(
+                "Configuration Saved",
+                f"Training configuration saved to:\n{path}",
+            )
+        except Exception as exc:
+            messagebox.showerror("Save Error", f"Failed to save configuration:\n{exc}")
+
+    def _load_train_config():
+        """Restore Training Configuration settings from a JSON file."""
+        path = filedialog.askopenfilename(
+            title="Load Training Configuration",
+            initialdir=_default_cfg_dir(),
+            filetypes=[("YOLO Studio config", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        _train_cfg_last_dir[0] = str(Path(path).parent)
+
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                cfg = json.load(fh)
+        except Exception as exc:
+            messagebox.showerror("Load Error", f"Failed to load configuration:\n{exc}")
+            return
+
+        # ── Restore basic fields ──────────────────────────────────────────
+        def _set_entry(widget, val):
+            try:
+                widget.delete(0, "end")
+                widget.insert(0, str(val))
+            except Exception:
+                pass
+
+        _set_entry(project_name_entry, cfg.get("project_name", ""))
+        _set_entry(input_size_entry,   cfg.get("input_size", "640"))
+        _set_entry(epochs_entry,       cfg.get("epochs", "300"))
+        _set_entry(batch_size_entry,   cfg.get("batch_size", "16"))
+        _set_entry(workers_entry,      cfg.get("workers", "8"))
+
+        # ── Class names ───────────────────────────────────────────────────
+        names = cfg.get("class_names", [])
+        if names:
+            class_names_text.delete("1.0", "end")
+            class_names_text.insert("1.0", "\n".join(names))
+
+        # ── Model selection ───────────────────────────────────────────────
+        saved_model = cfg.get("selected_model", "")
+        if saved_model and selected_model_var:
+            # Find the display name that maps to this model string
+            rev = {v: k for k, v in MODEL_MAP.items()}
+            disp = rev.get(saved_model, saved_model)
+            try:
+                selected_model_var.set(disp)
+            except Exception:
+                pass
+
+        saved_task = cfg.get("task_type", "")
+        if saved_task and task_type_var:
+            try:
+                task_type_var.set(saved_task)
+                _on_task_type_change()
+            except Exception:
+                pass
+
+        # ── Advanced params ───────────────────────────────────────────────
+        if _train_time_var is not None:
+            try:
+                _train_time_var.set(float(cfg.get("time", 0)))
+            except Exception:
+                pass
+        if _train_patience_var is not None:
+            _train_patience_var.set(str(cfg.get("patience", 100)))
+        if _train_save_var is not None:
+            _train_save_var.set(bool(cfg.get("save", True)))
+        if _train_save_period_var is not None:
+            _train_save_period_var.set(str(cfg.get("save_period", -1)))
+        if _train_cache_var is not None:
+            _train_cache_var.set(bool(cfg.get("cache", False)))
+        if _train_resume_var is not None:
+            _train_resume_var.set(bool(cfg.get("resume", False)))
+        if _train_freeze_var is not None:
+            _train_freeze_var.set(str(cfg.get("freeze", 0)))
+        if _train_lr0_var is not None:
+            _train_lr0_var.set(f"{cfg.get('lr0', 0.01):.4g}")
+        if _train_lrf_var is not None:
+            _train_lrf_var.set(f"{cfg.get('lrf', 0.01):.4g}")
+        if _train_momentum_var is not None:
+            _train_momentum_var.set(f"{cfg.get('momentum', 0.937):.4g}")
+        if _train_weight_decay_var is not None:
+            _train_weight_decay_var.set(f"{cfg.get('weight_decay', 0.0005):.4g}")
+        if _train_optimizer_var is not None:
+            _train_optimizer_var.set(str(cfg.get("optimizer", "auto")))
+        if _train_val_var is not None:
+            _train_val_var.set(bool(cfg.get("val", True)))
+        if _train_max_det_var is not None:
+            _train_max_det_var.set(str(cfg.get("max_det", 300)))
+
+        messagebox.showinfo(
+            "Configuration Loaded",
+            f"Training configuration loaded from:\n{path}",
+        )
+
+    cfg_btns = ctk.CTkFrame(config_panel, fg_color="transparent")
+    cfg_btns.pack(fill="x", padx=14, pady=(2, 4))
+    _save_cfg_btn = ctk.CTkButton(
+        cfg_btns, text="💾  Save Config", font=("Segoe UI", 12), height=30,
+        fg_color="#37474f", hover_color="#263238",
+        command=_save_train_config,
+    )
+    _save_cfg_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
+    Tooltip(
+        _save_cfg_btn,
+        "Save all current Training Configuration settings (including class names\n"
+        "and project name) to a JSON file.  The file can be reloaded later.",
+    )
+    _load_cfg_btn = ctk.CTkButton(
+        cfg_btns, text="📂  Load Config", font=("Segoe UI", 12), height=30,
+        fg_color="#37474f", hover_color="#263238",
+        command=_load_train_config,
+    )
+    _load_cfg_btn.pack(side="left", expand=True, fill="x", padx=(4, 0))
+    Tooltip(
+        _load_cfg_btn,
+        "Load a previously saved JSON configuration file and restore all\n"
+        "Training Configuration settings from it.",
+    )
+    _sep()
     btn_row = ctk.CTkFrame(config_panel, fg_color="transparent")
     btn_row.pack(fill="x", padx=14, pady=(4, 4))
 
