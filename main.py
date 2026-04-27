@@ -6,6 +6,7 @@ import sys
 import re
 import time
 import json
+import shutil
 import cv2
 import customtkinter as ctk
 import tkinter as tk
@@ -67,6 +68,14 @@ _ANSI_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]|\x1b[()][0-9A-Za-z]|\r')
 def _strip_ansi(text: str) -> str:
     """Remove ANSI escape sequences and carriage-return characters."""
     return _ANSI_RE.sub('', text)
+
+# ── Epoch progress regex ───────────────────────────────────────────────────────
+_EPOCH_RE = re.compile(r'^\s*(\d+)/(\d+)\s')
+
+def _match_epoch(raw_line: str, stripped_line: str):
+    """Return an epoch regex match from raw or stripped line, or None."""
+    m = _EPOCH_RE.match(raw_line)
+    return m if m else _EPOCH_RE.match(stripped_line)
 
 mimetypes.init()
 
@@ -371,38 +380,124 @@ def _auto_load_training_yaml(folder_path: str) -> None:
 #  Tooltip helper
 # ─────────────────────────────────────────────────────────────────────────────
 class Tooltip:
-    """Show a brief help tip when the user hovers over any tk/ctk widget."""
+    """Show a brief help tip when the user hovers over any tk/ctk widget.
+
+    • 500 ms hover delay before appearing (prevents flicker on mouse-over).
+    • Smooth fade-in over ~120 ms.
+    • Rounded corners via CTkFrame.
+    • Smart positioning: stays within the screen and flips above the widget
+      when there is not enough space below.
+    """
+
+    _DELAY_MS   = 500   # ms to wait before showing
+    _FADE_STEPS = 10    # alpha steps during fade-in
+    _FADE_MS    = 12    # ms between alpha steps  (~120 ms total)
 
     def __init__(self, widget, text: str) -> None:
-        self.widget = widget
-        self.text = text
-        self._tip = None
-        widget.bind("<Enter>", self._show)
+        self.widget    = widget
+        self.text      = text
+        self._tip      = None
+        self._after_id = None
+        widget.bind("<Enter>", self._schedule)
         widget.bind("<Leave>", self._hide)
 
+    # ── scheduling ──────────────────────────────────────────────────────────
+
+    def _schedule(self, _event=None) -> None:
+        self._cancel()
+        self._after_id = self.widget.after(self._DELAY_MS, self._show)
+
+    def _cancel(self) -> None:
+        if self._after_id is not None:
+            try:
+                self.widget.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    # ── appearance ──────────────────────────────────────────────────────────
+
     def _show(self, _event=None) -> None:
+        if self._tip:
+            return
         try:
-            x = self.widget.winfo_rootx() + 24
-            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+            wx = self.widget.winfo_rootx()
+            wy = self.widget.winfo_rooty()
+            wh = self.widget.winfo_height()
+            sw = self.widget.winfo_screenwidth()
+            sh = self.widget.winfo_screenheight()
         except Exception:
             return
-        self._tip = tw = tk.Toplevel(self.widget)
-        tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x}+{y}")
-        tk.Label(
-            tw,
+
+        # "#010101" acts as the transparent cut-out on Windows, giving true
+        # rounded corners. On other platforms it becomes the invisible window
+        # background that is obscured by the CTkFrame.
+        _TRANSP = "#010101"
+
+        tip = tk.Toplevel(self.widget)
+        self._tip = tip
+        tip.wm_overrideredirect(True)
+        tip.configure(bg=_TRANSP)
+        try:
+            tip.wm_attributes("-transparentcolor", _TRANSP)
+        except Exception:
+            pass
+        tip.wm_attributes("-alpha", 0.0)
+
+        container = ctk.CTkFrame(
+            tip,
+            corner_radius=8,
+            fg_color="#2e2e2e",
+            border_width=1,
+            border_color="#555555",
+        )
+        container.pack(padx=0, pady=0)
+        ctk.CTkLabel(
+            container,
             text=self.text,
-            justify=tk.LEFT,
-            background="#ffffc0",
-            relief=tk.SOLID,
-            borderwidth=1,
-            font=("Segoe UI", 10),
+            justify="left",
+            font=("Segoe UI", 11),
             wraplength=360,
-            padx=7,
-            pady=5,
-        ).pack()
+            text_color="#e8e8e8",
+            fg_color="transparent",
+        ).pack(padx=10, pady=7)
+
+        # Measure the popup, then clamp it to the monitor the widget is on.
+        tip.update_idletasks()
+        tw = tip.winfo_reqwidth()
+        th = tip.winfo_reqheight()
+
+        x = wx + 4
+        y = wy + wh + 4
+        if y + th > sh - 8:          # not enough room below → flip above
+            y = wy - th - 4
+
+        # Clamp without assuming the monitor starts at x=0 / y=0.
+        # wx/wy are absolute screen coordinates and may be negative when the
+        # app is on a secondary monitor positioned to the left of the primary.
+        # We compute the monitor's virtual origin from the widget position so
+        # the tooltip stays near the widget rather than being pulled to x=8.
+        mon_x = wx - (wx % sw) if sw else 0   # left edge of widget's monitor
+        mon_y = 0
+        x = max(mon_x + 8, min(x, mon_x + sw - tw - 8))
+        y = max(mon_y + 8, y)
+
+        tip.wm_geometry(f"+{x}+{y}")
+        self._fade_in(tip, 0)
+
+    def _fade_in(self, tip, step: int) -> None:
+        if self._tip is not tip:
+            return
+        alpha = min(1.0, (step + 1) / self._FADE_STEPS)
+        try:
+            tip.wm_attributes("-alpha", alpha)
+        except Exception:
+            return
+        if step + 1 < self._FADE_STEPS:
+            self.widget.after(self._FADE_MS, lambda: self._fade_in(tip, step + 1))
 
     def _hide(self, _event=None) -> None:
+        self._cancel()
         if self._tip:
             self._tip.destroy()
             self._tip = None
@@ -619,6 +714,34 @@ _detect_zoom_var          = None        # DoubleVar – image preview zoom level
 _train_class_names_text   = None    # CTkTextbox – class names in Train tab
 _train_rf_status_label    = None    # status label for YAML auto-detection
 
+# Train tab extra-params widget references
+_train_time_var          = None   # DoubleVar – time (hours)
+_train_patience_var      = None   # StringVar – patience
+_train_save_var          = None   # BooleanVar – save
+_train_save_period_var   = None   # StringVar – save_period
+_train_cache_var         = None   # BooleanVar – cache
+_train_resume_var        = None   # BooleanVar – resume
+_train_freeze_var        = None   # StringVar – freeze
+_train_lr0_var           = None   # StringVar – lr0
+_train_lrf_var           = None   # StringVar – lrf
+_train_momentum_var      = None   # StringVar – momentum
+_train_weight_decay_var  = None   # StringVar – weight_decay
+_train_optimizer_var     = None   # StringVar – optimizer
+_train_val_var           = None   # BooleanVar – val
+_train_max_det_var       = None   # StringVar – max_det
+_train_max_det_widget    = None   # widget reference for enabling/disabling
+
+# Training process control
+_train_proc              = [None]    # [subprocess.Popen] current training process
+_train_stop_btn_ref      = [None]    # [CTkButton] stop training button
+
+# Browse-button last-dir memory and button references
+_browse_last_dirs        = {}     # key → last visited directory string
+_train_cfg_last_dir      = [None] # [str|None] last dir for save/load config dialogs
+_train_data_btn_ref      = [None]
+_model_save_btn_ref      = [None]
+_custom_model_btn_ref    = [None]
+
 # Camera tab state
 _camera_half_var          = None    # BooleanVar – FP16 for camera inference
 
@@ -804,6 +927,11 @@ def on_sidebar_select(key: str) -> None:
     global _train_queue_frame
     global _train_class_names_text, _train_rf_status_label
     global _camera_half_var
+    global _train_time_var, _train_patience_var, _train_save_var
+    global _train_save_period_var, _train_cache_var, _train_resume_var
+    global _train_freeze_var, _train_lr0_var, _train_lrf_var
+    global _train_momentum_var, _train_weight_decay_var, _train_optimizer_var
+    global _train_val_var, _train_max_det_var, _train_max_det_widget
 
     # Stop live video playback and clean up audio if running
     _live_video_cancel_flag[0] = True
@@ -847,6 +975,12 @@ def on_sidebar_select(key: str) -> None:
     _train_class_names_text = None
     _train_rf_status_label = None
     _camera_half_var = None
+    _train_time_var = _train_patience_var = _train_save_var = None
+    _train_save_period_var = _train_cache_var = _train_resume_var = None
+    _train_freeze_var = _train_lr0_var = _train_lrf_var = None
+    _train_momentum_var = _train_weight_decay_var = _train_optimizer_var = None
+    _train_val_var = _train_max_det_var = _train_max_det_widget = None
+    _train_stop_btn_ref[0] = None
 
     if key == "Train":
         show_ai_train_window()
@@ -878,6 +1012,13 @@ def _on_task_type_change(*_args) -> None:
 def show_ai_train_window() -> None:
     global output_textbox, progress_bar, selected_model_var, task_type_var, model_menu_widget
     global train_data_label, model_save_label, custom_model_label
+    global _train_time_var, _train_patience_var, _train_save_var
+    global _train_save_period_var, _train_cache_var, _train_resume_var
+    global _train_freeze_var, _train_lr0_var, _train_lrf_var
+    global _train_momentum_var, _train_weight_decay_var, _train_optimizer_var
+    global _train_val_var, _train_max_det_var, _train_max_det_widget
+    global _train_data_btn_ref, _model_save_btn_ref, _custom_model_btn_ref
+    global _train_stop_btn_ref
 
     # ── Left: scrollable configuration panel ──────────────────────────────
     config_panel = ctk.CTkScrollableFrame(
@@ -1057,6 +1198,7 @@ def show_ai_train_window() -> None:
         config_panel, text="Browse…", font=FBTN, height=36, command=select_train_data
     )
     train_data_btn.pack(fill="x", **PAD)
+    _train_data_btn_ref[0] = train_data_btn
     Tooltip(
         train_data_btn,
         "Select a folder containing your YOLO-format image+annotation pairs.\n\n"
@@ -1087,6 +1229,7 @@ def show_ai_train_window() -> None:
         config_panel, text="Browse…", font=FBTN, height=36, command=select_model_save_folder
     )
     model_save_btn.pack(fill="x", **PAD)
+    _model_save_btn_ref[0] = model_save_btn
     Tooltip(model_save_btn, "Choose where the trained model weights and results will be saved.")
     model_save_label = ctk.CTkLabel(
         config_panel, text="No folder selected", font=("Segoe UI", 11),
@@ -1140,14 +1283,31 @@ def show_ai_train_window() -> None:
 
     # ── Custom base model (optional) ───────────────────────────────────────
     _lbl("Custom Base Model  (optional)")
-    ctk.CTkButton(
-        config_panel, text="Browse .pt…", font=FBTN, height=36, command=select_custom_model
-    ).pack(fill="x", **PAD)
+    _custom_row = ctk.CTkFrame(config_panel, fg_color="transparent")
+    _custom_row.pack(fill="x", **PAD)
+    _custom_model_btn = ctk.CTkButton(
+        _custom_row, text="Browse .pt…", font=FBTN, height=36, command=select_custom_model
+    )
+    _custom_model_btn.pack(side="left", fill="x", expand=True, padx=(0, 6))
+    _custom_model_btn_ref[0] = _custom_model_btn
     Tooltip(
-        config_panel.winfo_children()[-1],
+        _custom_model_btn,
         "Load your own .pt file as the training starting point.\n"
         "When set, this overrides the YOLO Model dropdown above.\n\n"
         "Useful for fine-tuning an already-trained custom model.",
+    )
+    # Resume toggle on same row
+    _train_resume_var = ctk.BooleanVar(value=False)
+    _resume_switch = ctk.CTkSwitch(
+        _custom_row, text="Resume", variable=_train_resume_var,
+        font=("Segoe UI", 12), width=80,
+    )
+    _resume_switch.pack(side="left", padx=(0, 4))
+    Tooltip(
+        _resume_switch,
+        "Resumes training from the last saved checkpoint.\n"
+        "Automatically loads model weights, optimizer state, and epoch count,\n"
+        "continuing training seamlessly.",
     )
     custom_model_label = ctk.CTkLabel(
         config_panel, text="Using built-in pretrained weights",
@@ -1166,6 +1326,7 @@ def show_ai_train_window() -> None:
     input_size_entry = ctk.CTkEntry(
         config_panel, placeholder_text="640", font=FENT, height=36
     )
+    input_size_entry.insert(0, "640")
     input_size_entry.pack(fill="x", **PAD)
     Tooltip(
         input_size_entry,
@@ -1174,22 +1335,24 @@ def show_ai_train_window() -> None:
         "1280 for higher precision on large images.",
     )
 
-    _lbl("Epochs  (e.g. 100)")
+    _lbl("Epochs  (e.g. 300)")
     epochs_entry = ctk.CTkEntry(
-        config_panel, placeholder_text="100", font=FENT, height=36
+        config_panel, placeholder_text="300", font=FENT, height=36
     )
+    epochs_entry.insert(0, "300")
     epochs_entry.pack(fill="x", **PAD)
     Tooltip(
         epochs_entry,
         "Number of full passes over the training dataset.\n"
         "More epochs → longer training, potentially better accuracy.\n"
-        "Start with 50–100; increase if validation loss is still improving.",
+        "Start with 50–300; increase if validation loss is still improving.",
     )
 
     _lbl("Batch Size  (e.g. 16)")
     batch_size_entry = ctk.CTkEntry(
         config_panel, placeholder_text="16", font=FENT, height=36
     )
+    batch_size_entry.insert(0, "16")
     batch_size_entry.pack(fill="x", **PAD)
     Tooltip(
         batch_size_entry,
@@ -1202,6 +1365,7 @@ def show_ai_train_window() -> None:
     workers_entry = ctk.CTkEntry(
         config_panel, placeholder_text="8", font=FENT, height=36
     )
+    workers_entry.insert(0, "8")
     workers_entry.pack(fill="x", **PAD)
     Tooltip(
         workers_entry,
@@ -1209,6 +1373,191 @@ def show_ai_train_window() -> None:
         "Higher values can speed up data loading on multi-core machines.\n"
         "Reduce to 0 on Windows if you see multiprocessing errors.",
     )
+    _sep()
+
+    # ── Advanced Training Options ──────────────────────────────────────────
+    _lbl("⚙  Advanced Training Options")
+
+    def _make_spinbox(parent, initial_val, step=1, is_float=False, width=90):
+        """Return (frame, StringVar) for a -/entry/+ spinbox."""
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        var = ctk.StringVar(value=str(initial_val))
+        def _adj(delta):
+            try:
+                cur = float(var.get()) if is_float else int(float(var.get()))
+            except ValueError:
+                cur = float(initial_val) if is_float else int(initial_val)
+            nv = cur + delta * step
+            if is_float:
+                # Round to 6 decimal places to avoid floating-point noise, display as 4 sig figs
+                nv = round(nv, 6)
+                var.set(f"{nv:.4g}")
+            else:
+                var.set(str(int(nv)))
+        ctk.CTkButton(frame, text="−", width=30, height=30, font=("Segoe UI", 14),
+                      command=lambda: _adj(-1)).pack(side="left")
+        ctk.CTkEntry(frame, textvariable=var, width=width, height=30,
+                     font=FENT, justify="center").pack(side="left", padx=2)
+        ctk.CTkButton(frame, text="+", width=30, height=30, font=("Segoe UI", 14),
+                      command=lambda: _adj(1)).pack(side="left")
+        return frame, var
+
+    # Time slider (0 = disabled, 1-24 hours)
+    _lbl("Max Training Time (hours, 0 = disabled)")
+    _train_time_var = ctk.DoubleVar(value=0.0)
+    _time_slider = ctk.CTkSlider(
+        config_panel, from_=0, to=24, variable=_train_time_var,
+        number_of_steps=24,
+    )
+    _time_slider.pack(fill="x", **PAD)
+    _time_val_lbl = ctk.CTkLabel(config_panel, text="0 hrs (disabled)", font=("Segoe UI", 11), anchor="w")
+    _time_val_lbl.pack(padx=14, anchor="w")
+    def _on_time_change(*_):
+        v = int(_train_time_var.get())
+        _time_val_lbl.configure(text=f"{v} hr{'s' if v != 1 else ''}" + (" (disabled)" if v == 0 else ""))
+    _train_time_var.trace_add("write", _on_time_change)
+    Tooltip(_time_slider,
+        "Maximum training time in hours. If set, this overrides the epochs argument,\n"
+        "allowing training to automatically stop after the specified duration.\n"
+        "Useful for time-constrained training scenarios.\n"
+        "Set to 0 to disable (use epochs instead).")
+
+    # Patience spinbox
+    _lbl_patience = _lbl("Patience (early-stop epochs)")
+    _patience_row, _train_patience_var = _make_spinbox(config_panel, 100)
+    _patience_row.pack(fill="x", **PAD)
+    _PATIENCE_TIP = (
+        "Number of epochs to wait without improvement in validation metrics\n"
+        "before early stopping the training. Helps prevent overfitting by\n"
+        "stopping training when performance plateaus.")
+    Tooltip(_lbl_patience, _PATIENCE_TIP)
+    Tooltip(_patience_row, _PATIENCE_TIP)
+
+    # Save toggle and Save Period spinbox on same row
+    _save_row = ctk.CTkFrame(config_panel, fg_color="transparent")
+    _save_row.pack(fill="x", **PAD)
+    _train_save_var = ctk.BooleanVar(value=True)
+    _save_sw = ctk.CTkSwitch(_save_row, text="Save Checkpoints", variable=_train_save_var, font=("Segoe UI", 12))
+    _save_sw.pack(side="left", padx=(0, 16))
+    Tooltip(_save_sw,
+        "Enables saving of training checkpoints and final model weights.\n"
+        "Useful for resuming training or model deployment.")
+    _lbl_sp = ctk.CTkLabel(_save_row, text="Save Period:", font=("Segoe UI", 12), anchor="w")
+    _lbl_sp.pack(side="left")
+    _sp_frame, _train_save_period_var = _make_spinbox(_save_row, -1, width=70)
+    _sp_frame.pack(side="left", padx=(4, 0))
+    _SP_TIP = (
+        "Frequency of saving model checkpoints (epochs). -1 = disabled.\n"
+        "Useful for saving interim models during long training sessions.")
+    Tooltip(_lbl_sp,  _SP_TIP)
+    Tooltip(_sp_frame, _SP_TIP)
+
+    # Cache toggle
+    _cache_row = ctk.CTkFrame(config_panel, fg_color="transparent")
+    _cache_row.pack(fill="x", **PAD)
+    _train_cache_var = ctk.BooleanVar(value=False)
+    _cache_sw = ctk.CTkSwitch(_cache_row, text="Cache Dataset Images", variable=_train_cache_var, font=("Segoe UI", 12))
+    _cache_sw.pack(side="left")
+    Tooltip(_cache_sw,
+        "Enables caching of dataset images in memory (True/ram), on disk (disk),\n"
+        "or disables it (False). Improves training speed by reducing disk I/O\n"
+        "at the cost of increased memory usage.")
+
+    # Freeze spinbox
+    _lbl_freeze = _lbl("Freeze Layers (0 = disabled)")
+    _freeze_row, _train_freeze_var = _make_spinbox(config_panel, 0)
+    _freeze_row.pack(fill="x", **PAD)
+    _FREEZE_TIP = (
+        "Freezes the first N layers of the model, reducing the number of\n"
+        "trainable parameters. Useful for fine-tuning or transfer learning.\n"
+        "Set to 0 to disable.")
+    Tooltip(_lbl_freeze, _FREEZE_TIP)
+    Tooltip(_freeze_row, _FREEZE_TIP)
+
+    # Learning rates row
+    _lr_row = ctk.CTkFrame(config_panel, fg_color="transparent")
+    _lr_row.pack(fill="x", **PAD)
+    _lbl_lr0 = ctk.CTkLabel(_lr_row, text="Initial LR (lr0):", font=("Segoe UI", 12), anchor="w")
+    _lbl_lr0.pack(side="left")
+    _lr0_frame, _train_lr0_var = _make_spinbox(_lr_row, 0.01, step=0.001, is_float=True, width=70)
+    _lr0_frame.pack(side="left", padx=(4, 12))
+    _LR0_TIP = (
+        "Initial learning rate (e.g. SGD=1E-2, Adam=1E-3). Adjusting this value\n"
+        "is crucial for the optimization process, influencing how rapidly model\n"
+        "weights are updated.")
+    Tooltip(_lbl_lr0,   _LR0_TIP)
+    Tooltip(_lr0_frame, _LR0_TIP)
+    _lbl_lrf = ctk.CTkLabel(_lr_row, text="Final LR (lrf):", font=("Segoe UI", 12), anchor="w")
+    _lbl_lrf.pack(side="left")
+    _lrf_frame, _train_lrf_var = _make_spinbox(_lr_row, 0.01, step=0.001, is_float=True, width=70)
+    _lrf_frame.pack(side="left", padx=(4, 0))
+    _LRF_TIP = (
+        "Final learning rate as a fraction of the initial rate = (lr0 * lrf),\n"
+        "used in conjunction with schedulers to adjust the learning rate over time.")
+    Tooltip(_lbl_lrf,   _LRF_TIP)
+    Tooltip(_lrf_frame, _LRF_TIP)
+
+    # Momentum and Weight Decay row
+    _mom_row = ctk.CTkFrame(config_panel, fg_color="transparent")
+    _mom_row.pack(fill="x", **PAD)
+    _lbl_mom = ctk.CTkLabel(_mom_row, text="Momentum:", font=("Segoe UI", 12), anchor="w")
+    _lbl_mom.pack(side="left")
+    _mom_frame, _train_momentum_var = _make_spinbox(_mom_row, 0.937, step=0.01, is_float=True, width=70)
+    _mom_frame.pack(side="left", padx=(4, 12))
+    _MOM_TIP = (
+        "Momentum factor for SGD or beta1 for Adam optimizers, influencing\n"
+        "the incorporation of past gradients in the current update.")
+    Tooltip(_lbl_mom,   _MOM_TIP)
+    Tooltip(_mom_frame, _MOM_TIP)
+    _lbl_wd = ctk.CTkLabel(_mom_row, text="Weight Decay:", font=("Segoe UI", 12), anchor="w")
+    _lbl_wd.pack(side="left")
+    _wd_frame, _train_weight_decay_var = _make_spinbox(_mom_row, 0.0005, step=0.0001, is_float=True, width=70)
+    _wd_frame.pack(side="left", padx=(4, 0))
+    _WD_TIP = "L2 regularization term, penalizing large weights to prevent overfitting."
+    Tooltip(_lbl_wd,   _WD_TIP)
+    Tooltip(_wd_frame, _WD_TIP)
+
+    # Optimizer dropdown
+    _lbl("Optimizer")
+    _OPTIMIZER_OPTIONS = ["auto", "SGD", "MuSGD", "Adam", "Adamax", "AdamW", "NAdam", "RAdam", "RMSProp"]
+    _train_optimizer_var = ctk.StringVar(value="auto")
+    _opt_menu = ctk.CTkOptionMenu(
+        config_panel, values=_OPTIMIZER_OPTIONS, variable=_train_optimizer_var,
+        font=FBTN, height=32,
+    )
+    _opt_menu.pack(fill="x", **PAD)
+    Tooltip(_opt_menu,
+        "Choice of optimizer for training. Options include SGD, MuSGD, Adam,\n"
+        "Adamax, AdamW, NAdam, RAdam, RMSProp, or auto for automatic selection\n"
+        "based on model configuration. Affects convergence speed and stability.")
+
+    # Val toggle and Max Det spinbox on same row
+    _val_row = ctk.CTkFrame(config_panel, fg_color="transparent")
+    _val_row.pack(fill="x", **PAD)
+    _train_val_var = ctk.BooleanVar(value=True)
+    _val_sw = ctk.CTkSwitch(_val_row, text="Validation", variable=_train_val_var, font=("Segoe UI", 12))
+    _val_sw.pack(side="left", padx=(0, 16))
+    Tooltip(_val_sw,
+        "Enables validation during training, allowing for periodic evaluation\n"
+        "of model performance on a separate dataset.")
+    _lbl_md = ctk.CTkLabel(_val_row, text="Max Detections:", font=("Segoe UI", 12), anchor="w")
+    _lbl_md.pack(side="left")
+    _md_frame, _train_max_det_var = _make_spinbox(_val_row, 300, width=70)
+    _md_frame.pack(side="left", padx=(4, 0))
+    _train_max_det_widget = _md_frame
+    _MD_TIP = (
+        "Specifies the maximum number of objects retained during the validation\n"
+        "phase of training. Only applicable when Validation is enabled.")
+    Tooltip(_lbl_md,   _MD_TIP)
+    Tooltip(_md_frame, _MD_TIP)
+    def _on_val_change(*_):
+        state = "normal" if _train_val_var.get() else "disabled"
+        for child in _md_frame.winfo_children():
+            try:
+                child.configure(state=state)
+            except Exception:
+                pass
+    _train_val_var.trace_add("write", _on_val_change)
     _sep()
 
     # ── Class names ────────────────────────────────────────────────────────
@@ -1235,16 +1584,67 @@ def show_ai_train_window() -> None:
     # ── Training queue ─────────────────────────────────────────────────────
     _lbl("Training Queue")
 
+    def _collect_extra_params(workers_str="8"):
+        """Collect the advanced training params from the widget variables."""
+        ep = {}
+        ep['workers'] = int(workers_str) if str(workers_str).isdigit() else 8
+        # time
+        try:
+            ep['time'] = int(_train_time_var.get()) if _train_time_var else 0
+        except Exception:
+            ep['time'] = 0
+        # patience
+        try:
+            ep['patience'] = int(_train_patience_var.get()) if _train_patience_var else 100
+        except Exception:
+            ep['patience'] = 100
+        ep['save'] = bool(_train_save_var.get()) if _train_save_var else True
+        try:
+            ep['save_period'] = int(_train_save_period_var.get()) if _train_save_period_var else -1
+        except Exception:
+            ep['save_period'] = -1
+        ep['cache'] = bool(_train_cache_var.get()) if _train_cache_var else False
+        ep['resume'] = bool(_train_resume_var.get()) if _train_resume_var else False
+        try:
+            ep['freeze'] = int(_train_freeze_var.get()) if _train_freeze_var else 0
+        except Exception:
+            ep['freeze'] = 0
+        try:
+            ep['lr0'] = float(_train_lr0_var.get()) if _train_lr0_var else 0.01
+        except Exception:
+            ep['lr0'] = 0.01
+        try:
+            ep['lrf'] = float(_train_lrf_var.get()) if _train_lrf_var else 0.01
+        except Exception:
+            ep['lrf'] = 0.01
+        try:
+            ep['momentum'] = float(_train_momentum_var.get()) if _train_momentum_var else 0.937
+        except Exception:
+            ep['momentum'] = 0.937
+        try:
+            ep['weight_decay'] = float(_train_weight_decay_var.get()) if _train_weight_decay_var else 0.0005
+        except Exception:
+            ep['weight_decay'] = 0.0005
+        ep['optimizer'] = str(_train_optimizer_var.get()) if _train_optimizer_var else 'auto'
+        ep['val'] = bool(_train_val_var.get()) if _train_val_var else True
+        try:
+            ep['max_det'] = int(_train_max_det_var.get()) if _train_max_det_var else 300
+        except Exception:
+            ep['max_det'] = 300
+        return ep
+
     def _get_current_job_config():
         pname   = project_name_entry.get().strip()
         isize   = input_size_entry.get().strip() or "640"
-        ep      = epochs_entry.get().strip() or "100"
+        ep      = epochs_entry.get().strip() or "300"
         bs      = batch_size_entry.get().strip() or "16"
         wk      = workers_entry.get().strip() or "8"
         raw_cls = class_names_text.get("1.0", "end-1c")
         cls     = [n.strip() for n in raw_cls.splitlines() if n.strip()]
         sel_disp  = selected_model_var.get() if selected_model_var else ""
         sel_model = MODEL_MAP.get(sel_disp, "")
+        task      = task_type_var.get() if task_type_var else "Detection"
+        extra = _collect_extra_params(wk)
         return {
             "project_name":      pname,
             "input_size":        isize,
@@ -1253,10 +1653,12 @@ def show_ai_train_window() -> None:
             "workers":           wk,
             "class_names":       cls,
             "selected_model":    sel_model,
+            "task_type":         task,
             "custom_model_path": custom_model_path,
             "train_data_path":   train_data_path,
             "model_save_path":   model_save_path,
             "roboflow_yaml":     roboflow_yaml_path,
+            "extra_params":      extra,
         }
 
     def _refresh_queue_list():
@@ -1325,9 +1727,173 @@ def show_ai_train_window() -> None:
     ).pack(side="left", expand=True, fill="x", padx=(4, 0))
     _sep()
 
-    # ── Start / Queue-Run buttons ──────────────────────────────────────────
+    # ── Save / Load training configuration ────────────────────────────────
+    def _default_cfg_dir() -> str:
+        """Return the last-used config dir, falling back to the user's Documents."""
+        if _train_cfg_last_dir[0]:
+            return _train_cfg_last_dir[0]
+        docs = Path.home() / "Documents"
+        return str(docs) if docs.exists() else str(Path.home())
+
+    def _save_train_config():
+        """Serialise all Training Configuration settings to a JSON file."""
+        pname = project_name_entry.get().strip()
+        slug  = re.sub(r"\s+", "-", pname).lower() if pname else "untitled"
+        ts    = datetime.now().strftime("%Y%m%d-%H%M")
+        default_name = f"ystraining-{slug}-{ts}.json"
+
+        path = filedialog.asksaveasfilename(
+            title="Save Training Configuration",
+            initialdir=_default_cfg_dir(),
+            initialfile=default_name,
+            defaultextension=".json",
+            filetypes=[("YOLO Studio config", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        _train_cfg_last_dir[0] = str(Path(path).parent)
+
+        cfg = _get_current_job_config()
+        # Also persist paths (not included in the queue job config)
+        cfg["train_data_path"] = train_data_path
+        cfg["model_save_path"] = model_save_path
+        cfg["custom_model_path"] = custom_model_path
+        cfg["roboflow_yaml"] = roboflow_yaml_path
+        # Flatten extra_params into top-level for readability
+        cfg.update(cfg.pop("extra_params", {}))
+
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(cfg, fh, indent=2, ensure_ascii=False)
+            messagebox.showinfo(
+                "Configuration Saved",
+                f"Training configuration saved to:\n{path}",
+            )
+        except Exception as exc:
+            messagebox.showerror("Save Error", f"Failed to save configuration:\n{exc}")
+
+    def _load_train_config():
+        """Restore Training Configuration settings from a JSON file."""
+        path = filedialog.askopenfilename(
+            title="Load Training Configuration",
+            initialdir=_default_cfg_dir(),
+            filetypes=[("YOLO Studio config", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        _train_cfg_last_dir[0] = str(Path(path).parent)
+
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                cfg = json.load(fh)
+        except Exception as exc:
+            messagebox.showerror("Load Error", f"Failed to load configuration:\n{exc}")
+            return
+
+        # ── Restore basic fields ──────────────────────────────────────────
+        def _set_entry(widget, val):
+            try:
+                widget.delete(0, "end")
+                widget.insert(0, str(val))
+            except Exception:
+                pass
+
+        _set_entry(project_name_entry, cfg.get("project_name", ""))
+        _set_entry(input_size_entry,   cfg.get("input_size", "640"))
+        _set_entry(epochs_entry,       cfg.get("epochs", "300"))
+        _set_entry(batch_size_entry,   cfg.get("batch_size", "16"))
+        _set_entry(workers_entry,      cfg.get("workers", "8"))
+
+        # ── Class names ───────────────────────────────────────────────────
+        names = cfg.get("class_names", [])
+        if names:
+            class_names_text.delete("1.0", "end")
+            class_names_text.insert("1.0", "\n".join(names))
+
+        # ── Model selection ───────────────────────────────────────────────
+        saved_model = cfg.get("selected_model", "")
+        if saved_model and selected_model_var:
+            # Find the display name that maps to this model string
+            rev = {v: k for k, v in MODEL_MAP.items()}
+            disp = rev.get(saved_model, saved_model)
+            try:
+                selected_model_var.set(disp)
+            except Exception:
+                pass
+
+        saved_task = cfg.get("task_type", "")
+        if saved_task and task_type_var:
+            try:
+                task_type_var.set(saved_task)
+                _on_task_type_change()
+            except Exception:
+                pass
+
+        # ── Advanced params ───────────────────────────────────────────────
+        if _train_time_var is not None:
+            try:
+                _train_time_var.set(float(cfg.get("time", 0)))
+            except Exception:
+                pass
+        if _train_patience_var is not None:
+            _train_patience_var.set(str(cfg.get("patience", 100)))
+        if _train_save_var is not None:
+            _train_save_var.set(bool(cfg.get("save", True)))
+        if _train_save_period_var is not None:
+            _train_save_period_var.set(str(cfg.get("save_period", -1)))
+        if _train_cache_var is not None:
+            _train_cache_var.set(bool(cfg.get("cache", False)))
+        if _train_resume_var is not None:
+            _train_resume_var.set(bool(cfg.get("resume", False)))
+        if _train_freeze_var is not None:
+            _train_freeze_var.set(str(cfg.get("freeze", 0)))
+        if _train_lr0_var is not None:
+            _train_lr0_var.set(f"{cfg.get('lr0', 0.01):.4g}")
+        if _train_lrf_var is not None:
+            _train_lrf_var.set(f"{cfg.get('lrf', 0.01):.4g}")
+        if _train_momentum_var is not None:
+            _train_momentum_var.set(f"{cfg.get('momentum', 0.937):.4g}")
+        if _train_weight_decay_var is not None:
+            _train_weight_decay_var.set(f"{cfg.get('weight_decay', 0.0005):.4g}")
+        if _train_optimizer_var is not None:
+            _train_optimizer_var.set(str(cfg.get("optimizer", "auto")))
+        if _train_val_var is not None:
+            _train_val_var.set(bool(cfg.get("val", True)))
+        if _train_max_det_var is not None:
+            _train_max_det_var.set(str(cfg.get("max_det", 300)))
+
+        messagebox.showinfo(
+            "Configuration Loaded",
+            f"Training configuration loaded from:\n{path}",
+        )
+
+    cfg_btns = ctk.CTkFrame(config_panel, fg_color="transparent")
+    cfg_btns.pack(fill="x", padx=14, pady=(2, 4))
+    _save_cfg_btn = ctk.CTkButton(
+        cfg_btns, text="💾  Save Config", font=("Segoe UI", 12), height=30,
+        fg_color="#37474f", hover_color="#263238",
+        command=_save_train_config,
+    )
+    _save_cfg_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
+    Tooltip(
+        _save_cfg_btn,
+        "Save all current Training Configuration settings (including class names\n"
+        "and project name) to a JSON file.  The file can be reloaded later.",
+    )
+    _load_cfg_btn = ctk.CTkButton(
+        cfg_btns, text="📂  Load Config", font=("Segoe UI", 12), height=30,
+        fg_color="#37474f", hover_color="#263238",
+        command=_load_train_config,
+    )
+    _load_cfg_btn.pack(side="left", expand=True, fill="x", padx=(4, 0))
+    Tooltip(
+        _load_cfg_btn,
+        "Load a previously saved JSON configuration file and restore all\n"
+        "Training Configuration settings from it.",
+    )
+    _sep()
     btn_row = ctk.CTkFrame(config_panel, fg_color="transparent")
-    btn_row.pack(fill="x", padx=14, pady=(4, 12))
+    btn_row.pack(fill="x", padx=14, pady=(4, 4))
 
     ctk.CTkButton(
         btn_row,
@@ -1348,8 +1914,31 @@ def show_ai_train_window() -> None:
         "Start training immediately with the current settings.",
     )
 
-    ctk.CTkButton(
+    _stop_btn = ctk.CTkButton(
         btn_row,
+        text="⏹  Stop Training",
+        command=_stop_training,
+        fg_color="#b71c1c",
+        hover_color="#7f0000",
+        font=("Segoe UI", 13, "bold"),
+        height=46,
+        text_color="white",
+        corner_radius=8,
+        state="disabled",
+    )
+    _stop_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
+    Tooltip(
+        _stop_btn,
+        "Stop the running training process.\n"
+        "The current epoch will be allowed to finish before stopping.",
+    )
+    _train_stop_btn_ref[0] = _stop_btn
+
+    stop_row = ctk.CTkFrame(config_panel, fg_color="transparent")
+    stop_row.pack(fill="x", padx=14, pady=(0, 4))
+
+    ctk.CTkButton(
+        stop_row,
         text="▶▶  Run Queue",
         command=_run_training_queue,
         fg_color="#4a148c",
@@ -1358,9 +1947,9 @@ def show_ai_train_window() -> None:
         height=46,
         text_color="white",
         corner_radius=8,
-    ).pack(side="left", fill="x", expand=True, padx=(4, 0))
+    ).pack(fill="x")
     Tooltip(
-        btn_row.winfo_children()[1],
+        stop_row.winfo_children()[0],
         "Run all queued training jobs in order.\n"
         "Each job uses the settings it was queued with.",
     )
@@ -3491,39 +4080,66 @@ def _show_benchmark_chart(metrics_list: list) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 def select_train_data() -> None:
     global train_data_path, train_data_label
-    path = normalize_path(filedialog.askdirectory(title="Select Training Data Folder"))
+    initial = _browse_last_dirs.get("train_data", "")
+    path = normalize_path(filedialog.askdirectory(
+        title="Select Training Data Folder",
+        initialdir=initial if initial else None,
+    ))
     if path:
         train_data_path = path
+        _browse_last_dirs["train_data"] = str(Path(path).parent)
         short = Path(path).name or path
         _safe_label_configure(train_data_label, text=short, text_color="#4caf50")
-        # Automatically load data.yaml if present in the selected folder
+        if _train_data_btn_ref[0]:
+            try:
+                _train_data_btn_ref[0].configure(fg_color="#2e7d32", hover_color="#1b5e20")
+            except Exception:
+                pass
         _auto_load_training_yaml(path)
 
 
 def select_model_save_folder() -> None:
     global model_save_path, model_save_label
-    path = normalize_path(filedialog.askdirectory(title="Select Model Save Folder"))
+    initial = _browse_last_dirs.get("model_save", "")
+    path = normalize_path(filedialog.askdirectory(
+        title="Select Model Save Folder",
+        initialdir=initial if initial else None,
+    ))
     if path:
         model_save_path = path
+        _browse_last_dirs["model_save"] = str(Path(path).parent)
         short = Path(path).name or path
         _safe_label_configure(model_save_label, text=short, text_color="#4caf50")
+        if _model_save_btn_ref[0]:
+            try:
+                _model_save_btn_ref[0].configure(fg_color="#2e7d32", hover_color="#1b5e20")
+            except Exception:
+                pass
 
 
 def select_custom_model() -> None:
     global custom_model_path, custom_model_label
+    initial = _browse_last_dirs.get("custom_model", "")
     path = normalize_path(
         filedialog.askopenfilename(
             title="Select Custom Base Model",
             filetypes=[("PyTorch model", "*.pt"), ("All files", "*.*")],
+            initialdir=initial if initial else None,
         )
     )
     if path:
         custom_model_path = path
+        _browse_last_dirs["custom_model"] = str(Path(path).parent)
         _safe_label_configure(
             custom_model_label,
             text=f"Custom: {Path(path).name}",
             text_color="#64b5f6",
         )
+        if _custom_model_btn_ref[0]:
+            try:
+                _custom_model_btn_ref[0].configure(fg_color="#2e7d32", hover_color="#1b5e20")
+            except Exception:
+                pass
 
 
 def clear_custom_model() -> None:
@@ -3726,7 +4342,7 @@ def start_training(
     if not input_size or not input_size.isdigit() or int(input_size) < 1:
         errors.append("• Image Size must be a positive integer (e.g. 640).")
     if not epochs_val or not epochs_val.isdigit() or int(epochs_val) < 1:
-        errors.append("• Epochs must be a positive integer (e.g. 100).")
+        errors.append("• Epochs must be a positive integer (e.g. 300).")
     if not batch_val or not batch_val.isdigit() or int(batch_val) < 1:
         errors.append("• Batch Size must be a positive integer (e.g. 16).")
     if not class_names:
@@ -3742,19 +4358,156 @@ def start_training(
 
     epochs     = epochs_val
     batch_size = batch_val
-    workers_int = int(workers_val) if workers_val.isdigit() else 8
 
-    # Use the Roboflow YAML directly if one was imported, otherwise build one
+    # Collect extra params from advanced options widgets
+    try:
+        extra_params = _collect_extra_params_global(workers_val)
+    except Exception:
+        extra_params = {'workers': int(workers_val) if workers_val.isdigit() else 8}
+
+    # ── Check for existing training checkpoint ─────────────────────────────
+    _check_and_offer_resume(project_name, epochs_val, extra_params)
+    return  # _check_and_offer_resume calls _proceed_with_training internally
+
+
+def _collect_extra_params_global(workers_val="8"):
+    """Collect advanced training params from module-level vars."""
+    ep = {}
+    ep['workers'] = int(workers_val) if str(workers_val).isdigit() else 8
+    try:
+        ep['time'] = int(_train_time_var.get()) if _train_time_var else 0
+    except Exception:
+        ep['time'] = 0
+    try:
+        ep['patience'] = int(_train_patience_var.get()) if _train_patience_var else 100
+    except Exception:
+        ep['patience'] = 100
+    ep['save'] = bool(_train_save_var.get()) if _train_save_var else True
+    try:
+        ep['save_period'] = int(_train_save_period_var.get()) if _train_save_period_var else -1
+    except Exception:
+        ep['save_period'] = -1
+    ep['cache'] = bool(_train_cache_var.get()) if _train_cache_var else False
+    ep['resume'] = bool(_train_resume_var.get()) if _train_resume_var else False
+    try:
+        ep['freeze'] = int(_train_freeze_var.get()) if _train_freeze_var else 0
+    except Exception:
+        ep['freeze'] = 0
+    try:
+        ep['lr0'] = float(_train_lr0_var.get()) if _train_lr0_var else 0.01
+    except Exception:
+        ep['lr0'] = 0.01
+    try:
+        ep['lrf'] = float(_train_lrf_var.get()) if _train_lrf_var else 0.01
+    except Exception:
+        ep['lrf'] = 0.01
+    try:
+        ep['momentum'] = float(_train_momentum_var.get()) if _train_momentum_var else 0.937
+    except Exception:
+        ep['momentum'] = 0.937
+    try:
+        ep['weight_decay'] = float(_train_weight_decay_var.get()) if _train_weight_decay_var else 0.0005
+    except Exception:
+        ep['weight_decay'] = 0.0005
+    ep['optimizer'] = str(_train_optimizer_var.get()) if _train_optimizer_var else 'auto'
+    ep['val'] = bool(_train_val_var.get()) if _train_val_var else True
+    try:
+        ep['max_det'] = int(_train_max_det_var.get()) if _train_max_det_var else 300
+    except Exception:
+        ep['max_det'] = 300
+    return ep
+
+
+def _check_and_offer_resume(project_name: str, epochs_val: str, extra_params: dict) -> None:
+    """Check for existing checkpoint and offer resume, then proceed."""
+    runs_base = Path("runs")
+    last_pt = None
+    checkpoint_dir = None
+    for task_dir in ["detect", "segment", "classify", "pose", "obb", "train"]:
+        candidate = runs_base / task_dir / project_name / "weights" / "last.pt"
+        if candidate.exists():
+            last_pt = candidate
+            checkpoint_dir = candidate.parent.parent
+            break
+
+    if last_pt is None:
+        _proceed_with_training(extra_params)
+        return
+
+    epochs_done_msg = ""
+    try:
+        ckpt = _torch.load(str(last_pt), map_location="cpu", weights_only=False)
+        epoch_done = ckpt.get("epoch", None)
+        if epoch_done is not None:
+            remaining = int(epochs_val) - int(epoch_done) - 1
+            epochs_done_msg = (
+                f"\n\nCheckpoint epoch: {epoch_done + 1}\n"
+                f"Target epochs: {epochs_val}\n"
+                f"Remaining epochs: {max(0, remaining)}"
+            )
+    except Exception:
+        pass
+
+    answer = messagebox.askyesnocancel(
+        "Resume Training?",
+        f"A previous training checkpoint was found for project '{project_name}':\n"
+        f"{checkpoint_dir}{epochs_done_msg}\n\n"
+        "• YES – Resume training from the last checkpoint\n"
+        "• NO – Start fresh (ignores checkpoint)\n"
+        "• CANCEL – Abort",
+    )
+
+    if answer is None:
+        return
+    if answer:
+        try:
+            _TEMP_DIR.mkdir(exist_ok=True)
+            temp_last = _TEMP_DIR / f"resume_{project_name}_last.pt"
+            shutil.copy2(str(last_pt), str(temp_last))
+            extra_params = dict(extra_params)
+            extra_params['resume'] = True
+            # Pass the checkpoint path so train_yolo loads it as the model file.
+            # Ultralytics resume requires: YOLO("last.pt").train(resume=True)
+            extra_params['resume_checkpoint'] = str(temp_last)
+            output_queue.put(f"⏩ Resuming training from checkpoint: {last_pt}\n")
+            output_queue.put(f"   Temp copy created at: {temp_last}\n")
+        except Exception as exc:
+            messagebox.showerror("Resume Error", f"Could not copy checkpoint:\n{exc}")
+            return
+    _proceed_with_training(extra_params)
+
+
+def _proceed_with_training(extra_params: dict) -> None:
+    """Build YAML and kick off the training subprocess."""
+    workers_int = extra_params.get('workers', 8)
+
     if roboflow_yaml_path:
         yaml_path = roboflow_yaml_path
     else:
         yaml_path = create_yaml(project_name, train_data_path, class_names, model_save_path)
 
-    _run_training_subprocess(yaml_path, selected_model_size, workers_int)
+    selected_display    = selected_model_var.get() if selected_model_var else ""
+    selected_model_size = MODEL_MAP.get(selected_display, "")
+
+    _run_training_subprocess(yaml_path, selected_model_size, workers_int, extra_params)
+
+
+def _stop_training() -> None:
+    """Terminate the running training subprocess."""
+    proc = _train_proc[0]
+    if proc and proc.poll() is None:
+        try:
+            proc.terminate()
+            output_queue.put("\n⏹ Training stop requested. Waiting for current epoch to finish…\n")
+        except Exception as e:
+            output_queue.put(f"\n⚠ Could not stop training: {e}\n")
+    else:
+        output_queue.put("\n⚠ No training process is currently running.\n")
 
 
 def _run_training_subprocess(
-    yaml_path: str, selected_model_size: str, workers_int: int = 8
+    yaml_path: str, selected_model_size: str, workers_int: int = 8,
+    extra_params: dict = None,
 ) -> None:
     global progress_bar, output_textbox, _train_log_buffer, _train_progress_value, _train_progress_text
 
@@ -3762,6 +4515,14 @@ def _run_training_subprocess(
     _train_log_buffer.clear()
     _train_progress_value = 0.0
     _train_progress_text  = ""
+
+    extra_json = json.dumps(extra_params or {})
+
+    # When resuming, the model file must be the checkpoint (last.pt), not the
+    # original pre-trained weights.  Ultralytics requires:
+    #   YOLO("last.pt").train(resume=True)
+    resume_ckpt = (extra_params or {}).get('resume_checkpoint', '')
+    effective_custom_model = resume_ckpt if resume_ckpt else custom_model_path
 
     cmd = [
         sys.executable, "src/train.py",
@@ -3774,11 +4535,12 @@ def _run_training_subprocess(
         str(epochs),
         yaml_path,
         str(batch_size),
-        custom_model_path,
+        effective_custom_model,
+        extra_json,
     ]
 
     # Pattern: lines like "      1/100  " at the start
-    epoch_re = re.compile(r'^\s*(\d+)/(\d+)\s')
+    # (defined at module level as _EPOCH_RE; _match_epoch handles both raw and stripped)
 
     def _update_train_progress(current_ep: int, total_ep: int) -> None:
         global _train_progress_value, _train_progress_text
@@ -3800,6 +4562,15 @@ def _run_training_subprocess(
         except Exception:
             pass
 
+    def _set_stop_btn(enabled: bool) -> None:
+        btn = _train_stop_btn_ref[0]
+        if btn:
+            try:
+                if btn.winfo_exists():
+                    btn.configure(state="normal" if enabled else "disabled")
+            except Exception:
+                pass
+
     def run() -> None:
         proc = subprocess.Popen(
             cmd,
@@ -3809,14 +4580,17 @@ def _run_training_subprocess(
             encoding="utf-8",
             errors="replace",
         )
+        _train_proc[0] = proc
+        root.after(0, lambda: _set_stop_btn(True))
 
         def _reader():
             for raw_line in iter(proc.stdout.readline, ""):
                 line = _strip_ansi(raw_line)
+                line = line.lstrip()
                 # Skip lines that were purely escape sequences
                 if line.strip():
                     output_queue.put(line)
-                m = epoch_re.match(line)
+                m = _match_epoch(raw_line, line)
                 if m:
                     ep_cur = int(m.group(1))
                     ep_tot = int(m.group(2))
@@ -3825,6 +4599,8 @@ def _run_training_subprocess(
 
         threading.Thread(target=_reader, daemon=True).start()
         proc.wait()
+        _train_proc[0] = None
+        root.after(0, lambda: _set_stop_btn(False))
         root.after(0, _training_finished)
 
     if progress_bar:
@@ -4248,6 +5024,7 @@ def _run_training_queue() -> None:
                         output_queue.put(f"❌ Failed to create YAML: {exc}\n")
                         continue
 
+                _extra = job.get("extra_params", {})
                 cmd = [
                     sys.executable, "src/train.py",
                     project_name,
@@ -4260,8 +5037,9 @@ def _run_training_queue() -> None:
                     yaml_path,
                     str(batch_size),
                     custom_model_path,
+                    json.dumps(_extra),
                 ]
-                epoch_re = re.compile(r'^\s*(\d+)/(\d+)\s')
+                epoch_re = _EPOCH_RE
 
                 proc = subprocess.Popen(
                     cmd,
@@ -4270,9 +5048,10 @@ def _run_training_queue() -> None:
                 )
                 for raw_line in iter(proc.stdout.readline, ""):
                     line = _strip_ansi(raw_line)
+                    line = line.lstrip()
                     if line.strip():
                         output_queue.put(line)
-                    m = epoch_re.match(line)
+                    m = _match_epoch(raw_line, line)
                     if m:
                         ep_cur, ep_tot = int(m.group(1)), int(m.group(2))
                         root.after(0, lambda c=ep_cur, t=ep_tot: _update_queue_bar(c, t, qi, len(jobs)))
