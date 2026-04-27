@@ -1,254 +1,357 @@
-"""dataset.py – Utilities for importing datasets, especially Roboflow ZIPs.
-
-Supports Roboflow YOLOv8 export format:
-  data.yaml (may appear multiple times in the archive)
-  train/images/*.jpg   train/labels/*.txt
-  valid/images/*.jpg   valid/labels/*.txt
-  test/images/*.jpg    test/labels/*.txt   (optional)
-
-The data.yaml 'names' field may be either a plain list (standard Ultralytics)
-or an integer-keyed dict (Roboflow export).  Both are normalised to a list.
-"""
-
 import shutil
-import warnings
-import zipfile
+import os
+import cv2
+import mimetypes
 from pathlib import Path
+from ultralytics import YOLO
+from typing import List, Union, Callable, Optional
+from datetime import datetime
 
+VALID_IMAGE_EXTENSIONS = {
+    '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.ppm',
+    '.JPG', '.JPEG', '.PNG', '.GIF', '.BMP', '.WEBP', '.TIFF', '.PPM'
+}
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  YAML helpers  (PyYAML is a transitive dep of ultralytics)
-# ─────────────────────────────────────────────────────────────────────────────
+VALID_VIDEO_EXTENSIONS = {
+    '.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv',
+    '.MP4', '.AVI', '.MOV', '.MKV', '.WMV', '.FLV'
+}
 
-def _load_yaml(yaml_path: Path) -> dict:
-    import yaml
-    with open(str(yaml_path), "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+def is_valid_image(file_path: Union[str, Path]) -> bool:
+    """Check if a file is a valid image by examining both extension and mime type"""
+    try:
+        file_path = Path(file_path)
+        # Check file extension
+        if file_path.suffix.lower() not in {ext.lower() for ext in VALID_IMAGE_EXTENSIONS}:
+            return False
+            
+        # Check mime type
+        mime_type, _ = mimetypes.guess_type(str(file_path))
+        if not mime_type or not mime_type.startswith('image/'):
+            return False
+            
+        return True
+    except Exception:
+        return False
 
+def is_valid_video(file_path: Union[str, Path]) -> bool:
+    """Check if a file is a valid video by examining both extension and mime type"""
+    try:
+        file_path = Path(file_path)
+        # Check file extension
+        if file_path.suffix.lower() not in {ext.lower() for ext in VALID_VIDEO_EXTENSIONS}:
+            return False
+            
+        # Check mime type
+        mime_type, _ = mimetypes.guess_type(str(file_path))
+        if not mime_type or not mime_type.startswith('video/'):
+            return False
+            
+        return True
+    except Exception:
+        return False
 
-def _write_yaml(yaml_path: Path, data: dict) -> None:
-    import yaml
-    with open(str(yaml_path), "w", encoding="utf-8") as f:
-        yaml.dump(data, f, allow_unicode=True, sort_keys=False)
+def normalize_path(file_path: Union[str, Path]) -> Path:
+    """Normalize path to handle Japanese characters and different path formats"""
+    try:
+        return Path(file_path).resolve()
+    except Exception:
+        raise ValueError(f"Invalid path: {file_path}")
 
+def get_media_files(directory: Union[str, Path]) -> tuple[List[Path], List[Path]]:
+    """Recursively find all valid images and videos in a directory"""
+    directory = normalize_path(directory)
+    image_files = []
+    video_files = []
+    
+    try:
+        for file_path in directory.rglob('*'):
+            if not file_path.is_file():
+                continue
+            if is_valid_image(file_path):
+                image_files.append(file_path)
+            elif is_valid_video(file_path):
+                video_files.append(file_path)
+    except Exception as e:
+        print(f"Error scanning directory {directory}: {e}")
+        return [], []
+        
+    return sorted(image_files), sorted(video_files)
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Name normalisation
-# ─────────────────────────────────────────────────────────────────────────────
+def process_video(
+    video_path: Path,
+    model,
+    output_dir: Path,
+    conf_threshold: float = 0.5,
+    progress_callback: Optional[Callable] = None,
+    cancel_flag: Optional[Callable] = None,
+    half: bool = False,
+    device: Optional[str] = None,
+):
+    """Process a video file and save detection results.
 
-def parse_names(names_data) -> list:
-    """Convert Roboflow dict-format or standard list-format names to a list.
-
-    Roboflow exports:
-        names:
-          0: cat
-          1: dog
-    PyYAML loads this as {0: 'cat', 1: 'dog'}.  Standard Ultralytics uses a
-    plain list.  Both forms are accepted and returned as a plain list.
+    progress_callback(frac: float, msg: str) is called every 30 frames where
+    frac is in [0, 1] representing progress through this video.
+    cancel_flag() returns True if processing should be stopped.
     """
-    if isinstance(names_data, list):
-        return [str(n) for n in names_data]
-    if isinstance(names_data, dict):
-        return [str(names_data[k]) for k in sorted(names_data.keys())]
-    return []
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        print(f"Error opening video file: {video_path}")
+        return None
+
+    # Get video properties
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = max(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), 1)
+
+    # Create output directory
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    video_name = video_path.stem
+    video_output_dir = output_dir / f"{timestamp}_{video_name}"
+    video_output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create video writer
+    output_video_path = video_output_dir / f"{video_name}_detection.mp4"
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(str(output_video_path), fourcc, fps, (width, height))
+
+    frame_count = 0
+    detection_count = 0
+
+    while True:
+        if cancel_flag and cancel_flag():
+            break
+
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Update progress every 30 frames
+        if frame_count % 30 == 0:
+            frac = frame_count / total_frames
+            if progress_callback:
+                progress_callback(
+                    frac,
+                    f"{video_path.name}: frame {frame_count}/{total_frames}",
+                )
+            else:
+                print(
+                    f"\rProcessing video: {frac * 100:.1f}% ({frame_count}/{total_frames} frames)",
+                    end="",
+                )
+
+        # Detect objects in frame
+        results = model.predict(frame, save=False, conf=conf_threshold, half=half, verbose=False,
+                                **({"device": device} if device is not None else {}))
+
+        # Only process frames with detections above threshold
+        if len(results[0].boxes) > 0:
+            annotated_frame = results[0].plot()
+
+            frame_path = video_output_dir / f"frame_{detection_count:04d}.jpg"
+            cv2.imwrite(str(frame_path), annotated_frame)
+
+            txt_path = video_output_dir / f"frame_{detection_count:04d}.txt"
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                for box in results[0].boxes:
+                    if box.conf[0] >= conf_threshold:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        label = model.names[int(box.cls[0])]
+                        confidence = box.conf[0]
+                        f.write(f"{label} {confidence:.2f} {x1} {y1} {x2} {y2}\n")
+
+            detection_count += 1
+            out.write(annotated_frame)
+        else:
+            out.write(frame)
+
+        frame_count += 1
+
+    # Clean up
+    cap.release()
+    out.release()
+
+    print(f"\nVideo processing complete. {detection_count} frames with detections saved.")
+    print(f"Output video saved to: {output_video_path}")
+
+    return video_output_dir
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Roboflow ZIP extraction
-# ─────────────────────────────────────────────────────────────────────────────
+def get_model_info(model_path: str) -> dict:
+    """Return basic metadata about a YOLO .pt file without full loading."""
+    p = Path(model_path)
+    info = {
+        "name": p.name,
+        "size_mb": p.stat().st_size / 1_048_576 if p.exists() else 0,
+        "num_classes": None,
+        "class_names": [],
+        "task": "unknown",
+    }
+    try:
+        model = YOLO(model_path)
+        info["num_classes"] = len(model.names)
+        info["class_names"] = list(model.names.values())
+        info["task"] = getattr(model, "task", "detect") or "detect"
+    except Exception:
+        pass
+    return info
 
-def extract_roboflow_zip(zip_path: str, extract_dir: str, progress_callback=None) -> tuple:
-    """Extract a Roboflow YOLOv8-format ZIP archive.
+def move_detection_results(source_dir, target_dir):
+    source_dir = normalize_path(source_dir)
+    target_dir = normalize_path(target_dir)
+    
+    # Create target directory if it doesn't exist
+    target_dir.mkdir(parents=True, exist_ok=True)
+    
+    for file_path in source_dir.iterdir():
+        target_file = target_dir / file_path.name
+        
+        # Remove existing file/directory if it exists
+        if target_file.exists():
+            if target_file.is_dir():
+                shutil.rmtree(str(target_file))
+            else:
+                target_file.unlink()
+        
+        # Move the file
+        if file_path.is_file():
+            shutil.move(str(file_path), str(target_file))
+        else:
+            shutil.move(str(file_path), str(target_dir))
+    
+    # Clean up source directory
+    shutil.rmtree(str(source_dir))
+
+def _find_latest_predict_run():
+    """Find the most recently modified prediction run directory under runs/."""
+    candidates = []
+    runs_base = Path('runs')
+    if not runs_base.exists():
+        return None
+    for task_dir in runs_base.iterdir():
+        if task_dir.is_dir():
+            for run_dir in task_dir.iterdir():
+                if run_dir.is_dir():
+                    candidates.append(run_dir)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def detect_images(
+    images_folder,
+    model_path,
+    callback=None,
+    progress_callback: Optional[Callable] = None,
+    image_result_callback: Optional[Callable] = None,
+    conf_threshold: float = 0.5,
+    half: bool = False,
+    workers: int = 4,
+    cancel_flag: Optional[Callable] = None,
+    task: Optional[str] = None,
+    device: Optional[str] = None,
+):
+    """Run YOLO detection on all images/videos in a folder.
 
     Parameters
     ----------
-    zip_path   : path to the .zip file to import
-    extract_dir: parent directory; a sub-folder named after the zip stem is
-                 created inside it (avoids collisions on re-import)
-    progress_callback : optional callable(current: int, total: int, message: str)
-                 called periodically during extraction to report progress.
-
-    Returns
-    -------
-    (dataset_root, yaml_path, class_names)
-      dataset_root – absolute path to the extracted folder
-      yaml_path    – absolute path to the patched data.yaml
-      class_names  – ordered list of class name strings
+    progress_callback(current: int, total: int, msg: str)
+        Called after each image or video with the running count.
+    image_result_callback(image_path: str)
+        Called after each image is processed and saved, with the path of the
+        result image so the GUI can display it incrementally.
+    cancel_flag()
+        Callable that returns True when the user wants to abort.
+    task
+        Explicit YOLO task type ('detect', 'segment', 'classify', 'pose', 'obb').
+        Required for exported formats such as TensorRT (.engine) or ONNX (.onnx)
+        that do not embed task metadata.  When None the task is inferred
+        automatically (works for .pt files but may fail for exported formats).
+    device
+        Inference device string such as 'cuda' or 'cpu'.  When None the
+        default Ultralytics device selection is used.
     """
-    zip_path = Path(zip_path).resolve()
-    extract_dir = Path(extract_dir).resolve()
-    dataset_root = extract_dir / zip_path.stem
-    dataset_root.mkdir(parents=True, exist_ok=True)
+    model = YOLO(model_path, task=task)
 
-    _extract_zip(zip_path, dataset_root, progress_callback=progress_callback)
+    images_folder = normalize_path(images_folder)
+    image_files, video_files = get_media_files(images_folder)
 
-    yaml_path = _find_yaml(dataset_root)
-    if yaml_path is None:
-        raise FileNotFoundError(
-            f"No data.yaml found after extracting '{zip_path.name}'. "
-            "Please confirm this is a Roboflow YOLOv8 export."
+    if not image_files and not video_files:
+        print("No valid media files found in the directory")
+        if callback:
+            # Create the results dir so _on_detection_complete can scan it
+            empty_results = Path(images_folder) / 'results'
+            empty_results.mkdir(parents=True, exist_ok=True)
+            callback(str(empty_results))
+        return
+
+    total = len(image_files) + len(video_files)
+    current = 0
+
+    results_dir = Path(images_folder) / 'results'
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    # Process images one-by-one so we can report per-image progress
+    for i, img_path in enumerate(image_files):
+        if cancel_flag and cancel_flag():
+            break
+        if progress_callback:
+            progress_callback(current, total, f"Image {i + 1}/{len(image_files)}: {img_path.name}")
+        model.predict(
+            str(img_path), save=True, save_txt=True, imgsz=640,
+            conf=conf_threshold, half=half, workers=workers, verbose=False,
+            **({"device": device} if device is not None else {}),
         )
+        latest_run_dir = _find_latest_predict_run()
+        if latest_run_dir:
+            move_detection_results(latest_run_dir, results_dir)
+        # Notify caller about the newly saved result image so the GUI can
+        # display it immediately rather than waiting for all images to finish.
+        if image_result_callback:
+            # Fast path: YOLO normally preserves the original filename.
+            result_candidate = results_dir / img_path.name
+            if not (result_candidate.is_file() and is_valid_image(result_candidate)):
+                # Fallback: scan for any file whose stem matches (handles
+                # cases where YOLO converts the extension, e.g. PNG → JPEG).
+                result_candidate = None
+                for result_file in results_dir.iterdir():
+                    if (result_file.is_file()
+                            and result_file.stem == img_path.stem
+                            and is_valid_image(result_file)):
+                        result_candidate = result_file
+                        break
+            if result_candidate:
+                image_result_callback(str(result_candidate))
+        current += 1
 
-    data = _load_yaml(yaml_path)
-    class_names = parse_names(data.get("names", []))
+    # Process videos
+    for j, video_file in enumerate(video_files):
+        if cancel_flag and cancel_flag():
+            break
 
-    # Rewrite YAML: absolute paths, normalised names, 'val' alias
-    _patch_yaml(yaml_path, dataset_root)
+        def _vid_cb(frac: float, msg: str, _cur=current, _tot=total):
+            if progress_callback:
+                # Map video frame fraction into the global progress slot for this video
+                progress_callback(int(_cur + frac), _tot, msg)
 
-    return str(dataset_root), str(yaml_path), class_names
+        if progress_callback:
+            progress_callback(current, total, f"Video {j + 1}/{len(video_files)}: {video_file.name}")
 
+        process_video(
+            video_file, model, results_dir,
+            conf_threshold=conf_threshold,
+            progress_callback=_vid_cb,
+            cancel_flag=cancel_flag,
+            half=half,
+            device=device,
+        )
+        current += 1
+        if progress_callback:
+            progress_callback(current, total, f"Video {j + 1}/{len(video_files)} complete")
 
-def _extract_zip(zip_path: Path, dest: Path, progress_callback=None) -> None:
-    """Extract the ZIP, writing the first occurrence of data.yaml only.
+    if progress_callback:
+        progress_callback(total, total, "Detection complete")
 
-    Roboflow historically embeds data.yaml under multiple sub-paths in the
-    same archive, which causes name-collision warnings on extraction.
-    We deduplicate by only writing the first data.yaml encountered.
-
-    progress_callback(current: int, total: int, message: str) is called
-    periodically so the caller can update a progress indicator.
-    """
-    with zipfile.ZipFile(str(zip_path), "r") as zf:
-        members = zf.namelist()
-        total = len(members)
-        yaml_written = False
-        for i, member in enumerate(members):
-            is_yaml = Path(member).name.lower() in ("data.yaml", "data.yml")
-            if is_yaml:
-                if yaml_written:
-                    continue
-                yaml_written = True
-
-            out_path = dest / member
-            if member.endswith("/"):
-                out_path.mkdir(parents=True, exist_ok=True)
-            else:
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(member) as src, open(str(out_path), "wb") as dst:
-                    shutil.copyfileobj(src, dst)
-
-            if progress_callback and (i % 20 == 0 or i == total - 1):
-                progress_callback(i + 1, total, Path(member).name)
-
-
-def _find_yaml(dataset_root: Path):
-    """Return the top-level data.yaml, or the first yaml found recursively."""
-    direct = dataset_root / "data.yaml"
-    if direct.exists():
-        return direct
-    candidates = sorted(dataset_root.rglob("data.yaml"))
-    return candidates[0] if candidates else None
-
-
-def _patch_yaml(yaml_path: Path, dataset_root: Path) -> None:
-    """Rewrite data.yaml so Ultralytics can find the dataset from any CWD.
-
-    Changes made:
-    * path keys (train / val / valid / test) → absolute paths
-    * names dict → plain list
-    * 'valid' key aliased to 'val' (Roboflow uses 'valid', Ultralytics wants 'val')
-    * top-level 'path' key set to dataset_root
-    * val/valid paths that cannot be resolved fall back to the train split
-    * test path that cannot be resolved is removed
-    """
-    data = _load_yaml(yaml_path)
-
-    # Normalise names to plain list
-    if isinstance(data.get("names"), dict):
-        data["names"] = parse_names(data["names"])
-        data["nc"] = len(data["names"])
-
-    yaml_dir = yaml_path.parent
-
-    def _resolve(value: str) -> str | None:
-        """Return an absolute path string if *value* resolves to an existing path, else None."""
-        p = Path(value)
-        if p.is_absolute():
-            return str(p).replace("\\", "/") if p.exists() else None
-        # Try relative to dataset_root first, then to the yaml's own directory
-        for base in (dataset_root, yaml_dir):
-            candidate = (base / value).resolve()
-            if candidate.exists():
-                return str(candidate).replace("\\", "/")
-        return None
-
-    # Resolve relative path values to absolute
-    for key in ("train", "val", "valid", "test"):
-        if key not in data:
-            continue
-        resolved = _resolve(str(data[key]))
-        if resolved is not None:
-            data[key] = resolved
-
-    # 'valid' → 'val' alias for Ultralytics
-    if "valid" in data and "val" not in data:
-        data["val"] = data["valid"]
-
-    # Top-level path key (Ultralytics uses this as dataset root)
-    data["path"] = str(dataset_root).replace("\\", "/")
-
-    # Determine resolved train path to use as a fallback for missing splits
-    train_resolved = _resolve(str(data["train"])) if data.get("train") else None
-
-    # val/valid: if the path still does not exist on disk, fall back to train
-    for key in ("val", "valid"):
-        if key not in data:
-            continue
-        current = str(data[key])
-        if not Path(current).exists():
-            if train_resolved:
-                warnings.warn(
-                    f"'{key}' path '{current}' not found. "
-                    "Falling back to the train split for validation.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-                data[key] = train_resolved
-            else:
-                warnings.warn(
-                    f"'{key}' path '{current}' not found and no train fallback is available. "
-                    f"Removing '{key}' from the dataset configuration.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-                del data[key]
-
-    # test: remove entirely if the path does not exist
-    if "test" in data:
-        current = str(data["test"])
-        if not Path(current).exists():
-            warnings.warn(
-                f"'test' path '{current}' not found. "
-                "Removing 'test' from the dataset configuration.",
-                UserWarning,
-                stacklevel=2,
-            )
-            del data["test"]
-
-    _write_yaml(yaml_path, data)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Dataset statistics
-# ─────────────────────────────────────────────────────────────────────────────
-
-_IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}
-
-
-def count_dataset_images(dataset_root: str) -> dict:
-    """Count images in each split found under dataset_root.
-
-    Returns a dict like {'train': 800, 'valid': 100, 'test': 50}.
-    """
-    root = Path(dataset_root)
-    counts = {}
-    for split in ("train", "valid", "val", "test"):
-        img_dir = root / split / "images"
-        if img_dir.exists():
-            n = sum(
-                1 for f in img_dir.iterdir()
-                if f.suffix.lower() in _IMG_EXTS
-            )
-            if n:
-                counts[split] = n
-    return counts
+    if callback:
+        callback(str(results_dir))
