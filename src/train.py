@@ -316,9 +316,16 @@ def train_yolo(data_yaml, model_type, img_size, batch, epochs, model_save_path,
     """
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+    ep = extra_params or {}
+
     # Resolve which weights file to load.
-    # Prefer a locally cached copy in the models/ directory.
-    if custom_model_path and os.path.isfile(custom_model_path):
+    # When resuming, the checkpoint (last.pt) must be the model file so that
+    # Ultralytics can restore optimizer state and epoch count.
+    resume_ckpt = ep.get('resume_checkpoint', '')
+    if resume_ckpt and os.path.isfile(resume_ckpt):
+        model_file = resume_ckpt
+        print(f"Resuming from checkpoint: {resume_ckpt}")
+    elif custom_model_path and os.path.isfile(custom_model_path):
         model_file = custom_model_path
         print(f"Using custom base model: {custom_model_path}")
     elif model_type:
@@ -330,8 +337,6 @@ def train_yolo(data_yaml, model_type, img_size, batch, epochs, model_save_path,
     model = YOLO(model_file).to(device)
 
     task = _detect_task(model_type, custom_model_path)
-
-    ep = extra_params or {}
 
     train_kwargs = dict(
         data=data_yaml, epochs=epochs, batch=batch,

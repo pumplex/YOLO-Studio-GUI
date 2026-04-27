@@ -4194,6 +4194,9 @@ def _check_and_offer_resume(project_name: str, epochs_val: str, extra_params: di
             shutil.copy2(str(last_pt), str(temp_last))
             extra_params = dict(extra_params)
             extra_params['resume'] = True
+            # Pass the checkpoint path so train_yolo loads it as the model file.
+            # Ultralytics resume requires: YOLO("last.pt").train(resume=True)
+            extra_params['resume_checkpoint'] = str(temp_last)
             output_queue.put(f"⏩ Resuming training from checkpoint: {last_pt}\n")
             output_queue.put(f"   Temp copy created at: {temp_last}\n")
         except Exception as exc:
@@ -4243,6 +4246,12 @@ def _run_training_subprocess(
 
     extra_json = json.dumps(extra_params or {})
 
+    # When resuming, the model file must be the checkpoint (last.pt), not the
+    # original pre-trained weights.  Ultralytics requires:
+    #   YOLO("last.pt").train(resume=True)
+    resume_ckpt = (extra_params or {}).get('resume_checkpoint', '')
+    effective_custom_model = resume_ckpt if resume_ckpt else custom_model_path
+
     cmd = [
         sys.executable, "src/train.py",
         project_name,
@@ -4254,7 +4263,7 @@ def _run_training_subprocess(
         str(epochs),
         yaml_path,
         str(batch_size),
-        custom_model_path,
+        effective_custom_model,
         extra_json,
     ]
 
