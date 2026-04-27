@@ -1376,14 +1376,14 @@ def show_ai_train_window() -> None:
     _lr_row = ctk.CTkFrame(config_panel, fg_color="transparent")
     _lr_row.pack(fill="x", **PAD)
     ctk.CTkLabel(_lr_row, text="Initial LR (lr0):", font=("Segoe UI", 12), anchor="w").pack(side="left")
-    _lr0_frame, _train_lr0_var = _make_spinbox(_lr_row, "0.01", step=0.001, is_float=True, width=70)
+    _lr0_frame, _train_lr0_var = _make_spinbox(_lr_row, 0.01, step=0.001, is_float=True, width=70)
     _lr0_frame.pack(side="left", padx=(4, 12))
     Tooltip(_lr0_frame,
         "Initial learning rate (e.g. SGD=1E-2, Adam=1E-3). Adjusting this value\n"
         "is crucial for the optimization process, influencing how rapidly model\n"
         "weights are updated.")
     ctk.CTkLabel(_lr_row, text="Final LR (lrf):", font=("Segoe UI", 12), anchor="w").pack(side="left")
-    _lrf_frame, _train_lrf_var = _make_spinbox(_lr_row, "0.01", step=0.001, is_float=True, width=70)
+    _lrf_frame, _train_lrf_var = _make_spinbox(_lr_row, 0.01, step=0.001, is_float=True, width=70)
     _lrf_frame.pack(side="left", padx=(4, 0))
     Tooltip(_lrf_frame,
         "Final learning rate as a fraction of the initial rate = (lr0 * lrf),\n"
@@ -1393,13 +1393,13 @@ def show_ai_train_window() -> None:
     _mom_row = ctk.CTkFrame(config_panel, fg_color="transparent")
     _mom_row.pack(fill="x", **PAD)
     ctk.CTkLabel(_mom_row, text="Momentum:", font=("Segoe UI", 12), anchor="w").pack(side="left")
-    _mom_frame, _train_momentum_var = _make_spinbox(_mom_row, "0.937", step=0.01, is_float=True, width=70)
+    _mom_frame, _train_momentum_var = _make_spinbox(_mom_row, 0.937, step=0.01, is_float=True, width=70)
     _mom_frame.pack(side="left", padx=(4, 12))
     Tooltip(_mom_frame,
         "Momentum factor for SGD or beta1 for Adam optimizers, influencing\n"
         "the incorporation of past gradients in the current update.")
     ctk.CTkLabel(_mom_row, text="Weight Decay:", font=("Segoe UI", 12), anchor="w").pack(side="left")
-    _wd_frame, _train_weight_decay_var = _make_spinbox(_mom_row, "0.0005", step=0.0001, is_float=True, width=70)
+    _wd_frame, _train_weight_decay_var = _make_spinbox(_mom_row, 0.0005, step=0.0001, is_float=True, width=70)
     _wd_frame.pack(side="left", padx=(4, 0))
     Tooltip(_wd_frame,
         "L2 regularization term, penalizing large weights to prevent overfitting.")
