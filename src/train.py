@@ -269,9 +269,36 @@ def copy_and_remove_latest_run_files(model_save_path, project_name, task='detect
         )
         return
 
-    # The runs directory is intentionally preserved.  Deleting it could destroy
-    # artefacts from other training runs (including partially-completed ones).
-    # Users should manage the runs directory manually.
+    # ── Verify every copied item then delete the source run folder ────────────
+    # Only the specific run directory that was just copied is removed; the rest
+    # of the runs tree (sibling runs, parent task folder, etc.) is untouched.
+    verify_ok = True
+    for item in latest_dir.iterdir():
+        dest = model_save_path / item.name
+        if not dest.exists():
+            print(f"Verification failed: '{dest}' not found in destination.")
+            verify_ok = False
+            break
+        if item.is_file():
+            if item.stat().st_size != dest.stat().st_size:
+                print(
+                    f"Verification failed: size mismatch for '{item.name}' "
+                    f"(source {item.stat().st_size} B, dest {dest.stat().st_size} B)."
+                )
+                verify_ok = False
+                break
+
+    if verify_ok:
+        try:
+            shutil.rmtree(str(latest_dir))
+            print(f"Source run directory '{latest_dir}' removed after successful copy.")
+        except Exception as exc:
+            print(f"Could not remove source run directory '{latest_dir}': {exc}")
+    else:
+        print(
+            f"Verification did not pass. "
+            f"The source run directory '{latest_dir}' has NOT been removed."
+        )
 
 def _find_split_images_dir(root: Path, aliases: list) -> Path | None:
     """Return the first *root/alias/images* directory that exists and has files."""
