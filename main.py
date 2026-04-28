@@ -361,6 +361,7 @@ def _auto_load_training_yaml(folder_path: str) -> None:
         roboflow_yaml_path = str(patched_path)
 
         # Update class-names textbox if the Train tab is currently open
+        _train_form_state["class_names"] = "\n".join(names)
         if _train_class_names_text is not None:
             try:
                 if _train_class_names_text.winfo_exists():
@@ -847,6 +848,40 @@ _train_last_epoch_start  = [None]      # [float|None] – monotonic time epoch N
 _train_last_epoch_num    = [0]         # [int] – last epoch number seen
 _train_pending_losses    = [None]      # [(box,cls,dfl)|None] – last 100% values this epoch
 
+# ── Train tab form-state buffer (survive tab switches) ───────────────────────
+_train_form_state = {
+    "project_name": "",
+    "input_size":   "640",
+    "epochs":       "300",
+    "batch_size":   "16",
+    "workers":      "8",
+    "class_names":  "",
+    "task_type":    "Detection",
+    "model":        "YOLOv8-Nano",
+    "time":         0.0,
+    "patience":     100,
+    "save":         True,
+    "save_period":  -1,
+    "cache":        False,
+    "resume":       False,
+    "freeze":       0,
+    "lr0":          0.01,
+    "lrf":          0.01,
+    "momentum":     0.937,
+    "weight_decay": 0.0005,
+    "optimizer":    "auto",
+    "val":          True,
+    "max_det":      300,
+}
+
+# ── Detect tab form-state buffer ─────────────────────────────────────────────
+_detect_form_state = {
+    "conf":    0.5,
+    "half":    False,
+    "workers": "4",
+    "task":    "Auto-detect",
+}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Embedded logo  (base64-encoded PNG, displayed in sidebar)
@@ -1176,6 +1211,7 @@ def show_ai_train_window() -> None:
                 # Auto-fill class names textbox
                 class_names_text.delete("1.0", "end")
                 class_names_text.insert("1.0", "\n".join(names))
+                _train_form_state["class_names"] = "\n".join(names)
 
                 status = f"✅  {Path(zip_path).stem}  •  {len(names)} classes  •  {count_str} images"
                 _safe_label_configure(_rf_status_label, text=status, text_color="#4caf50")
@@ -1235,10 +1271,13 @@ def show_ai_train_window() -> None:
 
     # ── Project name ───────────────────────────────────────────────────────
     _lbl("Project Name")
+    _pname_var = ctk.StringVar(value=_train_form_state.get("project_name", ""))
     project_name_entry = ctk.CTkEntry(
-        config_panel, placeholder_text="e.g.  my_detector", font=FENT, height=36
+        config_panel, placeholder_text="e.g.  my_detector", font=FENT, height=36,
+        textvariable=_pname_var,
     )
     project_name_entry.pack(fill="x", **PAD)
+    _pname_var.trace_add("write", lambda *_: _train_form_state.update({"project_name": _pname_var.get()}))
     Tooltip(
         project_name_entry,
         "A short alphanumeric name for this training run.\n"
@@ -1271,10 +1310,15 @@ def show_ai_train_window() -> None:
         "If you imported a Roboflow ZIP above, this is set automatically.",
     )
     train_data_label = ctk.CTkLabel(
-        config_panel, text="No folder selected", font=("Segoe UI", 11),
-        text_color="gray", anchor="w",
+        config_panel,
+        text=Path(train_data_path).name if train_data_path else "No folder selected",
+        font=("Segoe UI", 11),
+        text_color="#4caf50" if train_data_path else "gray",
+        anchor="w",
     )
     train_data_label.pack(fill="x", padx=14)
+    if train_data_path:
+        train_data_btn.configure(fg_color="#2e7d32", hover_color="#1b5e20")
     _sep()
 
     # ── Save folder ────────────────────────────────────────────────────────
@@ -1286,15 +1330,21 @@ def show_ai_train_window() -> None:
     _model_save_btn_ref[0] = model_save_btn
     Tooltip(model_save_btn, "Choose where the trained model weights and results will be saved.")
     model_save_label = ctk.CTkLabel(
-        config_panel, text="No folder selected", font=("Segoe UI", 11),
-        text_color="gray", anchor="w",
+        config_panel,
+        text=Path(model_save_path).name if model_save_path else "No folder selected",
+        font=("Segoe UI", 11),
+        text_color="#4caf50" if model_save_path else "gray",
+        anchor="w",
     )
     model_save_label.pack(fill="x", padx=14)
+    if model_save_path:
+        model_save_btn.configure(fg_color="#2e7d32", hover_color="#1b5e20")
     _sep()
 
     # ── Task type ──────────────────────────────────────────────────────────
     _lbl("Task Type")
-    task_type_var = ctk.StringVar(value="Detection")
+    task_type_var = ctk.StringVar(value=_train_form_state.get("task_type", "Detection"))
+    task_type_var.trace_add("write", lambda *_: _train_form_state.update({"task_type": task_type_var.get()}))
     task_menu_w = ctk.CTkOptionMenu(
         config_panel,
         variable=task_type_var,
@@ -1315,11 +1365,16 @@ def show_ai_train_window() -> None:
 
     # ── YOLO model dropdown ────────────────────────────────────────────────
     _lbl("YOLO Model")
-    selected_model_var = ctk.StringVar(value=DETECTION_MODELS[0])
+    _init_task_models = _MODELS_BY_TASK.get(task_type_var.get(), DETECTION_MODELS)
+    _saved_model = _train_form_state.get("model", _init_task_models[0])
+    if _saved_model not in _init_task_models:
+        _saved_model = _init_task_models[0]
+    selected_model_var = ctk.StringVar(value=_saved_model)
+    selected_model_var.trace_add("write", lambda *_: _train_form_state.update({"model": selected_model_var.get()}))
     model_menu_widget = ctk.CTkOptionMenu(
         config_panel,
         variable=selected_model_var,
-        values=DETECTION_MODELS,
+        values=_init_task_models,
         font=FBTN,
         dropdown_font=FBTN,
         height=36,
@@ -1351,7 +1406,8 @@ def show_ai_train_window() -> None:
         "Useful for fine-tuning an already-trained custom model.",
     )
     # Resume toggle on same row
-    _train_resume_var = ctk.BooleanVar(value=False)
+    _train_resume_var = ctk.BooleanVar(value=_train_form_state.get("resume", False))
+    _train_resume_var.trace_add("write", lambda *_: _train_form_state.update({"resume": _train_resume_var.get()}))
     _resume_switch = ctk.CTkSwitch(
         _custom_row, text="Resume", variable=_train_resume_var,
         font=("Segoe UI", 12), width=80,
@@ -1364,10 +1420,15 @@ def show_ai_train_window() -> None:
         "continuing training seamlessly.",
     )
     custom_model_label = ctk.CTkLabel(
-        config_panel, text="Using built-in pretrained weights",
-        font=("Segoe UI", 11), text_color="gray", anchor="w",
+        config_panel,
+        text=f"Custom: {Path(custom_model_path).name}" if custom_model_path else "Using built-in pretrained weights",
+        font=("Segoe UI", 11),
+        text_color="#64b5f6" if custom_model_path else "gray",
+        anchor="w",
     )
     custom_model_label.pack(fill="x", padx=14)
+    if custom_model_path:
+        _custom_model_btn.configure(fg_color="#2e7d32", hover_color="#1b5e20")
     ctk.CTkButton(
         config_panel, text="Clear custom model", font=("Segoe UI", 11),
         height=28, fg_color="gray50", hover_color="gray35",
@@ -1377,11 +1438,13 @@ def show_ai_train_window() -> None:
 
     # ── Numeric training params ────────────────────────────────────────────
     _lbl("Image Size  (e.g. 640)")
+    _isize_var = ctk.StringVar(value=str(_train_form_state.get("input_size", "640")))
     input_size_entry = ctk.CTkEntry(
-        config_panel, placeholder_text="640", font=FENT, height=36
+        config_panel, placeholder_text="640", font=FENT, height=36,
+        textvariable=_isize_var,
     )
-    input_size_entry.insert(0, "640")
     input_size_entry.pack(fill="x", **PAD)
+    _isize_var.trace_add("write", lambda *_: _train_form_state.update({"input_size": _isize_var.get()}))
     Tooltip(
         input_size_entry,
         "Square resolution fed into the network (pixels).\n"
@@ -1390,11 +1453,13 @@ def show_ai_train_window() -> None:
     )
 
     _lbl("Epochs  (e.g. 300)")
+    _epochs_var = ctk.StringVar(value=str(_train_form_state.get("epochs", "300")))
     epochs_entry = ctk.CTkEntry(
-        config_panel, placeholder_text="300", font=FENT, height=36
+        config_panel, placeholder_text="300", font=FENT, height=36,
+        textvariable=_epochs_var,
     )
-    epochs_entry.insert(0, "300")
     epochs_entry.pack(fill="x", **PAD)
+    _epochs_var.trace_add("write", lambda *_: _train_form_state.update({"epochs": _epochs_var.get()}))
     Tooltip(
         epochs_entry,
         "Number of full passes over the training dataset.\n"
@@ -1403,11 +1468,13 @@ def show_ai_train_window() -> None:
     )
 
     _lbl("Batch Size  (e.g. 16)")
+    _batch_var = ctk.StringVar(value=str(_train_form_state.get("batch_size", "16")))
     batch_size_entry = ctk.CTkEntry(
-        config_panel, placeholder_text="16", font=FENT, height=36
+        config_panel, placeholder_text="16", font=FENT, height=36,
+        textvariable=_batch_var,
     )
-    batch_size_entry.insert(0, "16")
     batch_size_entry.pack(fill="x", **PAD)
+    _batch_var.trace_add("write", lambda *_: _train_form_state.update({"batch_size": _batch_var.get()}))
     Tooltip(
         batch_size_entry,
         "Images processed per gradient-update step.\n"
@@ -1416,11 +1483,13 @@ def show_ai_train_window() -> None:
     )
 
     _lbl("Workers  (e.g. 8)")
+    _workers_var = ctk.StringVar(value=str(_train_form_state.get("workers", "8")))
     workers_entry = ctk.CTkEntry(
-        config_panel, placeholder_text="8", font=FENT, height=36
+        config_panel, placeholder_text="8", font=FENT, height=36,
+        textvariable=_workers_var,
     )
-    workers_entry.insert(0, "8")
     workers_entry.pack(fill="x", **PAD)
+    _workers_var.trace_add("write", lambda *_: _train_form_state.update({"workers": _workers_var.get()}))
     Tooltip(
         workers_entry,
         "Number of CPU worker threads used to load data during training.\n"
@@ -1458,7 +1527,8 @@ def show_ai_train_window() -> None:
 
     # Time slider (0 = disabled, 1-24 hours)
     _lbl("Max Training Time (hours, 0 = disabled)")
-    _train_time_var = ctk.DoubleVar(value=0.0)
+    _train_time_var = ctk.DoubleVar(value=float(_train_form_state.get("time", 0.0)))
+    _train_time_var.trace_add("write", lambda *_: _train_form_state.update({"time": _train_time_var.get()}))
     _time_slider = ctk.CTkSlider(
         config_panel, from_=0, to=24, variable=_train_time_var,
         number_of_steps=24,
@@ -1478,7 +1548,12 @@ def show_ai_train_window() -> None:
 
     # Patience spinbox
     _lbl_patience = _lbl("Patience (early-stop epochs)")
-    _patience_row, _train_patience_var = _make_spinbox(config_panel, 100)
+    try:
+        _patience_init = int(_train_form_state.get("patience", 100))
+    except (ValueError, TypeError):
+        _patience_init = 100
+    _patience_row, _train_patience_var = _make_spinbox(config_panel, _patience_init)
+    _train_patience_var.trace_add("write", lambda *_: _train_form_state.update({"patience": _train_patience_var.get()}))
     _patience_row.pack(fill="x", **PAD)
     _PATIENCE_TIP = (
         "Number of epochs to wait without improvement in validation metrics\n"
@@ -1490,7 +1565,8 @@ def show_ai_train_window() -> None:
     # Save toggle and Save Period spinbox on same row
     _save_row = ctk.CTkFrame(config_panel, fg_color="transparent")
     _save_row.pack(fill="x", **PAD)
-    _train_save_var = ctk.BooleanVar(value=True)
+    _train_save_var = ctk.BooleanVar(value=bool(_train_form_state.get("save", True)))
+    _train_save_var.trace_add("write", lambda *_: _train_form_state.update({"save": _train_save_var.get()}))
     _save_sw = ctk.CTkSwitch(_save_row, text="Save Checkpoints", variable=_train_save_var, font=("Segoe UI", 12))
     _save_sw.pack(side="left", padx=(0, 16))
     Tooltip(_save_sw,
@@ -1498,7 +1574,12 @@ def show_ai_train_window() -> None:
         "Useful for resuming training or model deployment.")
     _lbl_sp = ctk.CTkLabel(_save_row, text="Save Period:", font=("Segoe UI", 12), anchor="w")
     _lbl_sp.pack(side="left")
-    _sp_frame, _train_save_period_var = _make_spinbox(_save_row, -1, width=70)
+    try:
+        _sp_init = int(_train_form_state.get("save_period", -1))
+    except (ValueError, TypeError):
+        _sp_init = -1
+    _sp_frame, _train_save_period_var = _make_spinbox(_save_row, _sp_init, width=70)
+    _train_save_period_var.trace_add("write", lambda *_: _train_form_state.update({"save_period": _train_save_period_var.get()}))
     _sp_frame.pack(side="left", padx=(4, 0))
     _SP_TIP = (
         "Frequency of saving model checkpoints (epochs). -1 = disabled.\n"
@@ -1509,7 +1590,8 @@ def show_ai_train_window() -> None:
     # Cache toggle
     _cache_row = ctk.CTkFrame(config_panel, fg_color="transparent")
     _cache_row.pack(fill="x", **PAD)
-    _train_cache_var = ctk.BooleanVar(value=False)
+    _train_cache_var = ctk.BooleanVar(value=bool(_train_form_state.get("cache", False)))
+    _train_cache_var.trace_add("write", lambda *_: _train_form_state.update({"cache": _train_cache_var.get()}))
     _cache_sw = ctk.CTkSwitch(_cache_row, text="Cache Dataset Images", variable=_train_cache_var, font=("Segoe UI", 12))
     _cache_sw.pack(side="left")
     Tooltip(_cache_sw,
@@ -1519,7 +1601,12 @@ def show_ai_train_window() -> None:
 
     # Freeze spinbox
     _lbl_freeze = _lbl("Freeze Layers (0 = disabled)")
-    _freeze_row, _train_freeze_var = _make_spinbox(config_panel, 0)
+    try:
+        _freeze_init = int(_train_form_state.get("freeze", 0))
+    except (ValueError, TypeError):
+        _freeze_init = 0
+    _freeze_row, _train_freeze_var = _make_spinbox(config_panel, _freeze_init)
+    _train_freeze_var.trace_add("write", lambda *_: _train_form_state.update({"freeze": _train_freeze_var.get()}))
     _freeze_row.pack(fill="x", **PAD)
     _FREEZE_TIP = (
         "Freezes the first N layers of the model, reducing the number of\n"
@@ -1533,7 +1620,12 @@ def show_ai_train_window() -> None:
     _lr_row.pack(fill="x", **PAD)
     _lbl_lr0 = ctk.CTkLabel(_lr_row, text="Initial LR (lr0):", font=("Segoe UI", 12), anchor="w")
     _lbl_lr0.pack(side="left")
-    _lr0_frame, _train_lr0_var = _make_spinbox(_lr_row, 0.01, step=0.001, is_float=True, width=70)
+    try:
+        _lr0_init = float(_train_form_state.get("lr0", 0.01))
+    except (ValueError, TypeError):
+        _lr0_init = 0.01
+    _lr0_frame, _train_lr0_var = _make_spinbox(_lr_row, _lr0_init, step=0.001, is_float=True, width=70)
+    _train_lr0_var.trace_add("write", lambda *_: _train_form_state.update({"lr0": _train_lr0_var.get()}))
     _lr0_frame.pack(side="left", padx=(4, 12))
     _LR0_TIP = (
         "Initial learning rate (e.g. SGD=1E-2, Adam=1E-3). Adjusting this value\n"
@@ -1543,7 +1635,12 @@ def show_ai_train_window() -> None:
     Tooltip(_lr0_frame, _LR0_TIP)
     _lbl_lrf = ctk.CTkLabel(_lr_row, text="Final LR (lrf):", font=("Segoe UI", 12), anchor="w")
     _lbl_lrf.pack(side="left")
-    _lrf_frame, _train_lrf_var = _make_spinbox(_lr_row, 0.01, step=0.001, is_float=True, width=70)
+    try:
+        _lrf_init = float(_train_form_state.get("lrf", 0.01))
+    except (ValueError, TypeError):
+        _lrf_init = 0.01
+    _lrf_frame, _train_lrf_var = _make_spinbox(_lr_row, _lrf_init, step=0.001, is_float=True, width=70)
+    _train_lrf_var.trace_add("write", lambda *_: _train_form_state.update({"lrf": _train_lrf_var.get()}))
     _lrf_frame.pack(side="left", padx=(4, 0))
     _LRF_TIP = (
         "Final learning rate as a fraction of the initial rate = (lr0 * lrf),\n"
@@ -1556,7 +1653,12 @@ def show_ai_train_window() -> None:
     _mom_row.pack(fill="x", **PAD)
     _lbl_mom = ctk.CTkLabel(_mom_row, text="Momentum:", font=("Segoe UI", 12), anchor="w")
     _lbl_mom.pack(side="left")
-    _mom_frame, _train_momentum_var = _make_spinbox(_mom_row, 0.937, step=0.01, is_float=True, width=70)
+    try:
+        _mom_init = float(_train_form_state.get("momentum", 0.937))
+    except (ValueError, TypeError):
+        _mom_init = 0.937
+    _mom_frame, _train_momentum_var = _make_spinbox(_mom_row, _mom_init, step=0.01, is_float=True, width=70)
+    _train_momentum_var.trace_add("write", lambda *_: _train_form_state.update({"momentum": _train_momentum_var.get()}))
     _mom_frame.pack(side="left", padx=(4, 12))
     _MOM_TIP = (
         "Momentum factor for SGD or beta1 for Adam optimizers, influencing\n"
@@ -1565,7 +1667,12 @@ def show_ai_train_window() -> None:
     Tooltip(_mom_frame, _MOM_TIP)
     _lbl_wd = ctk.CTkLabel(_mom_row, text="Weight Decay:", font=("Segoe UI", 12), anchor="w")
     _lbl_wd.pack(side="left")
-    _wd_frame, _train_weight_decay_var = _make_spinbox(_mom_row, 0.0005, step=0.0001, is_float=True, width=70)
+    try:
+        _wd_init = float(_train_form_state.get("weight_decay", 0.0005))
+    except (ValueError, TypeError):
+        _wd_init = 0.0005
+    _wd_frame, _train_weight_decay_var = _make_spinbox(_mom_row, _wd_init, step=0.0001, is_float=True, width=70)
+    _train_weight_decay_var.trace_add("write", lambda *_: _train_form_state.update({"weight_decay": _train_weight_decay_var.get()}))
     _wd_frame.pack(side="left", padx=(4, 0))
     _WD_TIP = "L2 regularization term, penalizing large weights to prevent overfitting."
     Tooltip(_lbl_wd,   _WD_TIP)
@@ -1574,7 +1681,8 @@ def show_ai_train_window() -> None:
     # Optimizer dropdown
     _lbl("Optimizer")
     _OPTIMIZER_OPTIONS = ["auto", "SGD", "MuSGD", "Adam", "Adamax", "AdamW", "NAdam", "RAdam", "RMSProp"]
-    _train_optimizer_var = ctk.StringVar(value="auto")
+    _train_optimizer_var = ctk.StringVar(value=str(_train_form_state.get("optimizer", "auto")))
+    _train_optimizer_var.trace_add("write", lambda *_: _train_form_state.update({"optimizer": _train_optimizer_var.get()}))
     _opt_menu = ctk.CTkOptionMenu(
         config_panel, values=_OPTIMIZER_OPTIONS, variable=_train_optimizer_var,
         font=FBTN, height=32,
@@ -1588,7 +1696,8 @@ def show_ai_train_window() -> None:
     # Val toggle and Max Det spinbox on same row
     _val_row = ctk.CTkFrame(config_panel, fg_color="transparent")
     _val_row.pack(fill="x", **PAD)
-    _train_val_var = ctk.BooleanVar(value=True)
+    _train_val_var = ctk.BooleanVar(value=bool(_train_form_state.get("val", True)))
+    _train_val_var.trace_add("write", lambda *_: _train_form_state.update({"val": _train_val_var.get()}))
     _val_sw = ctk.CTkSwitch(_val_row, text="Validation", variable=_train_val_var, font=("Segoe UI", 12))
     _val_sw.pack(side="left", padx=(0, 16))
     Tooltip(_val_sw,
@@ -1596,7 +1705,12 @@ def show_ai_train_window() -> None:
         "of model performance on a separate dataset.")
     _lbl_md = ctk.CTkLabel(_val_row, text="Max Detections:", font=("Segoe UI", 12), anchor="w")
     _lbl_md.pack(side="left")
-    _md_frame, _train_max_det_var = _make_spinbox(_val_row, 300, width=70)
+    try:
+        _md_init = int(_train_form_state.get("max_det", 300))
+    except (ValueError, TypeError):
+        _md_init = 300
+    _md_frame, _train_max_det_var = _make_spinbox(_val_row, _md_init, width=70)
+    _train_max_det_var.trace_add("write", lambda *_: _train_form_state.update({"max_det": _train_max_det_var.get()}))
     _md_frame.pack(side="left", padx=(4, 0))
     _train_max_det_widget = _md_frame
     _MD_TIP = (
@@ -1618,6 +1732,11 @@ def show_ai_train_window() -> None:
     _lbl("Class Names  (one per line)")
     class_names_text = ctk.CTkTextbox(config_panel, font=FENT, height=110)
     class_names_text.pack(fill="x", **PAD)
+    _saved_classes = _train_form_state.get("class_names", "")
+    if _saved_classes:
+        class_names_text.insert("1.0", _saved_classes)
+    class_names_text.bind("<FocusOut>", lambda _e: _train_form_state.update({"class_names": class_names_text.get("1.0", "end-1c")}))
+    class_names_text.bind("<KeyRelease>", lambda _e: _train_form_state.update({"class_names": class_names_text.get("1.0", "end-1c")}))
     Tooltip(
         class_names_text,
         "Enter each object class on its own line, matching the class IDs\n"
@@ -1857,12 +1976,20 @@ def show_ai_train_window() -> None:
         _set_entry(epochs_entry,       cfg.get("epochs", "300"))
         _set_entry(batch_size_entry,   cfg.get("batch_size", "16"))
         _set_entry(workers_entry,      cfg.get("workers", "8"))
+        _train_form_state.update({
+            "project_name": cfg.get("project_name", ""),
+            "input_size":   cfg.get("input_size", "640"),
+            "epochs":       cfg.get("epochs", "300"),
+            "batch_size":   cfg.get("batch_size", "16"),
+            "workers":      cfg.get("workers", "8"),
+        })
 
         # ── Class names ───────────────────────────────────────────────────
         names = cfg.get("class_names", [])
         if names:
             class_names_text.delete("1.0", "end")
             class_names_text.insert("1.0", "\n".join(names))
+            _train_form_state["class_names"] = "\n".join(names)
 
         # ── Model selection ───────────────────────────────────────────────
         saved_model = cfg.get("selected_model", "")
@@ -2216,7 +2343,8 @@ def show_image_detection_window() -> None:
 
     # Confidence threshold
     _clbl("Confidence Threshold")
-    _detect_conf_var = ctk.DoubleVar(value=0.5)
+    _detect_conf_var = ctk.DoubleVar(value=float(_detect_form_state.get("conf", 0.5)))
+    _detect_conf_var.trace_add("write", lambda *_: _detect_form_state.update({"conf": _detect_conf_var.get()}))
     conf_slider = ctk.CTkSlider(
         cfg, from_=0.01, to=1.0, variable=_detect_conf_var,
         number_of_steps=99,
@@ -2237,7 +2365,8 @@ def show_image_detection_window() -> None:
     _csep()
 
     # Half-precision (FP16) option
-    _detect_half_var = ctk.BooleanVar(value=False)
+    _detect_half_var = ctk.BooleanVar(value=bool(_detect_form_state.get("half", False)))
+    _detect_half_var.trace_add("write", lambda *_: _detect_form_state.update({"half": _detect_half_var.get()}))
     half_chk = ctk.CTkCheckBox(
         cfg, text="Half Precision (FP16)", variable=_detect_half_var, font=FLAB,
     )
@@ -2251,7 +2380,8 @@ def show_image_detection_window() -> None:
 
     # Workers
     _clbl("Data Workers")
-    _detect_workers_var = ctk.StringVar(value="4")
+    _detect_workers_var = ctk.StringVar(value=str(_detect_form_state.get("workers", "4")))
+    _detect_workers_var.trace_add("write", lambda *_: _detect_form_state.update({"workers": _detect_workers_var.get()}))
     workers_entry_d = ctk.CTkEntry(cfg, textvariable=_detect_workers_var, font=FLAB, height=32)
     workers_entry_d.pack(fill="x", padx=12, pady=(2, 4))
     Tooltip(
@@ -2265,7 +2395,8 @@ def show_image_detection_window() -> None:
     # Task override (required for TensorRT / ONNX exported models)
     _TASK_OPTIONS = ["Auto-detect", "detect", "segment", "classify", "pose", "obb"]
     _clbl("Model Task")
-    _detect_task_var = ctk.StringVar(value=_TASK_OPTIONS[0])
+    _detect_task_var = ctk.StringVar(value=str(_detect_form_state.get("task", _TASK_OPTIONS[0])))
+    _detect_task_var.trace_add("write", lambda *_: _detect_form_state.update({"task": _detect_task_var.get()}))
     task_menu = ctk.CTkOptionMenu(
         cfg, values=_TASK_OPTIONS, variable=_detect_task_var, font=FLAB, height=32,
     )
@@ -5041,10 +5172,11 @@ def _run_training_subprocess(
             frac = current_ep / max(total_ep, 1)
             _train_progress_value = frac
 
-            # Compute ETA
+            # Compute ETA using rolling average of last 5 epochs for better accuracy
             eta_str = ""
             if _train_epoch_durations:
-                avg_dur = sum(_train_epoch_durations) / len(_train_epoch_durations)
+                _eta_n = min(5, len(_train_epoch_durations))
+                avg_dur = sum(_train_epoch_durations[-_eta_n:]) / _eta_n
                 remaining = total_ep - current_ep
                 eta_str = "  " + _format_eta(remaining * avg_dur)
 
