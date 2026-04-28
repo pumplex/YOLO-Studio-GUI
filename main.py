@@ -2450,21 +2450,21 @@ def show_image_detection_window() -> None:
     ctk.CTkButton(
         _detect_nav_bar, text="◀", command=show_prev_image,
         fg_color="#1976d2", font=("Segoe UI", 18, "bold"), height=32, width=40,
-    ).place(relx=0.01, rely=0.05, relwidth=0.07, relheight=0.42)
+    ).place(relx=0.01, rely=0.20, relwidth=0.07)
 
-    image_index_label = ctk.CTkLabel(_detect_nav_bar, text="No results", font=("Segoe UI", 11))
-    image_index_label.place(relx=0.09, rely=0.05, relwidth=0.18, relheight=0.42)
+    image_index_label = ctk.CTkLabel(_detect_nav_bar, text="No results", font=("Segoe UI", 13))
+    image_index_label.place(relx=0.09, rely=0.10, relwidth=0.18, relheight=0.42)
 
     ctk.CTkButton(
         _detect_nav_bar, text="▶", command=show_next_image,
         fg_color="#1976d2", font=("Segoe UI", 18, "bold"), height=32, width=40,
-    ).place(relx=0.28, rely=0.05, relwidth=0.07, relheight=0.42)
+    ).place(relx=0.28, rely=0.20, relwidth=0.07)
 
     ctk.CTkButton(
         _detect_nav_bar, text="⛶  Full Screen", command=_open_fullscreen_image,
         fg_color="#37474f", hover_color="#263238",
         font=("Segoe UI", 11), height=28,
-    ).place(relx=0.37, rely=0.05, relwidth=0.14, relheight=0.42)
+    ).place(relx=0.37, rely=0.20, relwidth=0.14)
     Tooltip(_detect_nav_bar.winfo_children()[-1], "Open the current image in a full-screen viewer.")
 
     # ── Zoom label (top row, right of Full Screen) ────────────────────────
@@ -2472,9 +2472,9 @@ def show_image_detection_window() -> None:
     _detect_zoom_var = ctk.DoubleVar(value=1.0)
 
     zoom_lbl = ctk.CTkLabel(
-        _detect_nav_bar, text="🔍 1.00×", font=("Segoe UI", 9), anchor="w"
+        _detect_nav_bar, text="🔍 1.00×", font=("Segoe UI", 13), anchor="w"
     )
-    zoom_lbl.place(relx=0.52, rely=0.05, relwidth=0.055, relheight=0.42)
+    zoom_lbl.place(relx=0.53, rely=0.10, relwidth=0.055, relheight=0.42)
 
     # ── Zoom slider (top row, right of zoom label) ─────────────────────────
     zoom_slider = ctk.CTkSlider(
@@ -2482,8 +2482,9 @@ def show_image_detection_window() -> None:
         variable=_detect_zoom_var,
         number_of_steps=int((2.0 - 0.25) / 0.05),  # 0.05× steps
         height=14,
+        button_corner_radius=8,
     )
-    zoom_slider.place(relx=0.578, rely=0.10, relwidth=0.075, relheight=0.32)
+    zoom_slider.place(relx=0.578, rely=0.26, relwidth=0.075)
 
     # ── Progress label (top row, right of zoom slider) ─────────────────────
     _detect_progress_label = ctk.CTkLabel(
@@ -2507,10 +2508,10 @@ def show_image_detection_window() -> None:
 
     # ── Progress bar (thin full-width strip at bottom of nav bar) ──────────
     detection_progress_bar = ctk.CTkProgressBar(
-        _detect_nav_bar, progress_color="#43a047", mode="determinate", height=5,
+        _detect_nav_bar, progress_color="#43a047", mode="determinate", height=10,
     )
     detection_progress_bar.set(_detect_progress_value)
-    detection_progress_bar.place(relx=0.01, rely=0.62, relwidth=0.98, relheight=0.20)
+    detection_progress_bar.place(rely=0.70, relwidth=1.1)
 
     # Restore previously loaded result images if any exist
     if image_paths:
@@ -2663,9 +2664,9 @@ def show_live_video_window() -> None:
     conf_lbl.place(relx=0.24, rely=0.56, relwidth=0.03, relheight=0.38)
     conf_slider = ctk.CTkSlider(
         bar, from_=0.01, to=1.0, variable=_live_video_conf_var,
-        number_of_steps=99, width=70,
+        number_of_steps=99, width=70, height=16, button_corner_radius=8
     )
-    conf_slider.place(relx=0.27, rely=0.64, relwidth=0.07, relheight=0.22)
+    conf_slider.place(relx=0.27, rely=0.71, relwidth=0.07)
     conf_val_lbl = ctk.CTkLabel(bar, text="0.50", font=FONT, anchor="w")
     conf_val_lbl.place(relx=0.35, rely=0.56, relwidth=0.04, relheight=0.38)
     _live_video_conf_var.trace_add(
@@ -2709,9 +2710,9 @@ def show_live_video_window() -> None:
     vol_lbl.place(relx=0.82, rely=0.56, relwidth=0.03, relheight=0.38)
     vol_slider = ctk.CTkSlider(
         bar, from_=0.0, to=1.0, variable=_live_audio_volume_var,
-        number_of_steps=20,
+        number_of_steps=20, height=16, button_corner_radius=8
     )
-    vol_slider.place(relx=0.85, rely=0.64, relwidth=0.07, relheight=0.22)
+    vol_slider.place(relx=0.85, rely=0.71, relwidth=0.07)
     vol_val_lbl = ctk.CTkLabel(bar, text="100%", font=FONT, anchor="w")
     vol_val_lbl.place(relx=0.93, rely=0.56, relwidth=0.045, relheight=0.38)
 
@@ -2801,7 +2802,7 @@ def show_live_video_window() -> None:
             )
 
     vid_btn = ctk.CTkButton(bar, text="📂 Video", command=_pick_video, font=FONT, height=28)
-    vid_btn.place(relx=0.51, rely=0.06, relwidth=0.08, relheight=0.38)
+    vid_btn.place(relx=0.26, rely=0.20, relwidth=0.08)
     Tooltip(vid_btn, "Choose a local video file for detection playback.")
 
     url_btn = ctk.CTkButton(
@@ -2809,7 +2810,7 @@ def show_live_video_window() -> None:
         fg_color="#37474f", hover_color="#263238",
         font=FONT, height=28,
     )
-    url_btn.place(relx=0.60, rely=0.06, relwidth=0.07, relheight=0.38)
+    url_btn.place(relx=0.35, rely=0.20, relwidth=0.07)
     Tooltip(
         url_btn,
         "Open a video or stream from a URL.\n\n"
@@ -2818,7 +2819,7 @@ def show_live_video_window() -> None:
     )
 
     model_btn = ctk.CTkButton(bar, text="🤖 Model", command=_pick_model, font=FONT, height=28)
-    model_btn.place(relx=0.68, rely=0.06, relwidth=0.08, relheight=0.38)
+    model_btn.place(relx=0.43, rely=0.20, relwidth=0.08)
     Tooltip(model_btn, "Choose a YOLO model (.pt, .onnx, or .engine) for detection.")
 
     def _toggle_pause():
@@ -2840,7 +2841,7 @@ def show_live_video_window() -> None:
         fg_color="#37474f", hover_color="#263238",
         font=FONT, height=28,
     )
-    _live_video_pause_btn.place(relx=0.77, rely=0.06, relwidth=0.08, relheight=0.38)
+    _live_video_pause_btn.place(relx=0.52, rely=0.20, relwidth=0.08)
     Tooltip(_live_video_pause_btn, "Pause or resume video playback.  You can also left-click the video image.")
 
     def _screenshot_dialog():
@@ -2891,7 +2892,7 @@ def show_live_video_window() -> None:
         fg_color="#37474f", hover_color="#263238",
         font=FONT, height=28,
     )
-    shot_btn.place(relx=0.86, rely=0.06, relwidth=0.06, relheight=0.38)
+    shot_btn.place(relx=0.61, rely=0.20, relwidth=0.06)
     Tooltip(shot_btn, "Save the current frame as a PNG — choose with or without detection boxes.")
 
     def _toggle():
@@ -2907,7 +2908,7 @@ def show_live_video_window() -> None:
         fg_color="#2e7d32", hover_color="#1b5e20",
         font=("Segoe UI", 13, "bold"), height=28, text_color="white",
     )
-    _live_video_start_btn.place(relx=0.93, rely=0.06, relwidth=0.06, relheight=0.38)
+    _live_video_start_btn.place(relx=0.68, rely=0.20, relwidth=0.06)
     bar._start_btn = _live_video_start_btn
 
     # Second row: Task | FP16 | Conf | Audio | Sync | Seek buttons | Volume
@@ -2920,7 +2921,7 @@ def show_live_video_window() -> None:
         bar, values=_LIVE_TASK_OPTIONS, variable=_live_video_task_var,
         font=FONT, height=24, corner_radius=4,
     )
-    task_menu.place(relx=0.05, rely=0.56, relwidth=0.10, relheight=0.38)
+    task_menu.place(relx=0.04, rely=0.68, relwidth=0.10)
     Tooltip(
         task_menu,
         "Task type for the YOLO model.\n"
@@ -2942,16 +2943,24 @@ def show_live_video_window() -> None:
         _live_video_seek_to[0] = target
 
     # Jump buttons: (delta_seconds, label, relative_x_position)
-    for delta_seconds, button_label, rel_x_pos in [
-        (-10, "−10s", 0.60), (-5, "−5s", 0.65),
-        (+5, "+5s",   0.70), (+10, "+10s", 0.76),
-    ]:
-        ctk.CTkButton(
-            bar, text=button_label, command=lambda d=delta_seconds: _jump(d),
-            fg_color="#37474f", hover_color="#263238",
-            font=("Segoe UI", 10), height=24,
-        ).place(relx=rel_x_pos, rely=0.56, relwidth=0.05, relheight=0.38)
+    # Use a consistent increment (0.04 in this case) for even spacing
+    for i, (delta_seconds, button_label) in enumerate([
+        (-10, "−10s"), (-5, "−5s"), (+5, "+5s"), (+10, "+10s")
+    ]):
+        # Calculate rel_x based on index to ensure mathematical precision
+        rel_x_pos = 0.60 + (i * 0.042) 
 
+        ctk.CTkButton(
+            bar, 
+            text=button_label, 
+            command=lambda d=delta_seconds: _jump(d),
+            fg_color="#37474f", 
+            hover_color="#263238",
+            font=("Segoe UI", 9), # Slightly smaller font fits round buttons better
+            width=28,             # Width and Height must be equal for a circle
+            height=28,
+            corner_radius=14,     # Half of width/height makes it a perfect circle
+        ).place(relx=rel_x_pos, rely=0.67) # Adjusted rely to center with other widgets
 
 def _start_live_video() -> None:
     global _live_video_running, _live_video_cancel_flag, _live_video_paused
