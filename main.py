@@ -4684,7 +4684,8 @@ def _load_results_csv_into_graphs(project_name_: str) -> bool:
 
     Looks for results.csv under any known task sub-directory.
     Returns True if data was loaded, False otherwise.
-    Columns used: index 2=box_loss, 3=cls_loss, 4=dfl_loss (0-based).
+    Columns used: index 3=box_loss, 4=cls_loss, 5=dfl_loss (0-based).
+    CSV column order: epoch, time, box_loss, cls_loss, dfl_loss, metrics...
     """
     runs_base = Path("runs")
     csv_path = None
@@ -4707,12 +4708,12 @@ def _load_results_csv_into_graphs(project_name_: str) -> bool:
             if not raw:
                 continue
             parts = [p.strip() for p in raw.split(",")]
-            if len(parts) < 5:
+            if len(parts) < 6:
                 continue
             try:
-                box_vals.append(float(parts[2]))
-                cls_vals.append(float(parts[3]))
-                dfl_vals.append(float(parts[4]))
+                box_vals.append(float(parts[3]))
+                cls_vals.append(float(parts[4]))
+                dfl_vals.append(float(parts[5]))
             except (ValueError, IndexError):
                 pass
         if not box_vals:
