@@ -4684,8 +4684,10 @@ def _load_results_csv_into_graphs(project_name_: str) -> bool:
 
     Looks for results.csv under any known task sub-directory.
     Returns True if data was loaded, False otherwise.
-    Columns used: index 3=box_loss, 4=cls_loss, 5=dfl_loss (0-based).
-    CSV column order: epoch, time, box_loss, cls_loss, dfl_loss, metrics...
+    Column positions are determined from the header row so that the correct
+    values are used regardless of the exact column order.
+    Typical CSV column order: epoch, time, train/box_loss, train/cls_loss,
+    train/dfl_loss, metrics..., val/box_loss, val/cls_loss, val/dfl_loss, lr...
     """
     runs_base = Path("runs")
     csv_path = None
@@ -4699,23 +4701,53 @@ def _load_results_csv_into_graphs(project_name_: str) -> bool:
         return False
 
     try:
-        box_vals, cls_vals, dfl_vals = [], [], []
         with open(csv_path, "r", encoding="utf-8") as fh:
             lines = fh.readlines()
-        # First line is header; subsequent lines are epoch data
+
+        if not lines:
+            return False
+
+        # Parse header to find the correct column indices
+        headers = [h.strip() for h in lines[0].split(",")]
+
+        def _find_col(keyword: str) -> int:
+            """Return the first column index whose header contains *keyword*."""
+            for i, h in enumerate(headers):
+                if keyword in h:
+                    return i
+            return -1
+
+        box_idx = _find_col("box_loss")
+        cls_idx = _find_col("cls_loss")
+        dfl_idx = _find_col("dfl_loss")
+
+        # Fall back to positional indices (epoch=0, time=1, box=2, cls=3, dfl=4)
+        # if the header does not contain the expected column names.
+        if box_idx == -1:
+            box_idx = 2
+        if cls_idx == -1:
+            cls_idx = 3
+        if dfl_idx == -1:
+            dfl_idx = 4
+
+        # Only use the *training* loss columns (the first occurrence of each
+        # keyword) rather than validation loss columns.
+        box_vals, cls_vals, dfl_vals = [], [], []
         for raw in lines[1:]:
             raw = raw.strip()
             if not raw:
                 continue
             parts = [p.strip() for p in raw.split(",")]
-            if len(parts) < 6:
+            required = max(box_idx, cls_idx, dfl_idx) + 1
+            if len(parts) < required:
                 continue
             try:
-                box_vals.append(float(parts[3]))
-                cls_vals.append(float(parts[4]))
-                dfl_vals.append(float(parts[5]))
+                box_vals.append(float(parts[box_idx]))
+                cls_vals.append(float(parts[cls_idx]))
+                dfl_vals.append(float(parts[dfl_idx]))
             except (ValueError, IndexError):
                 pass
+
         if not box_vals:
             return False
         _train_loss_data["box_loss"] = box_vals
