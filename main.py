@@ -728,13 +728,15 @@ _detect_task_var          = None        # StringVar for model task override
 _detect_progress_label    = None        # text progress label
 _detect_nav_bar           = None        # bottom nav bar in detect view
 _detect_zoom_var          = None        # DoubleVar – image preview zoom level
-_detect_results_dir       = ""          # user-chosen results output folder ("" = default)
+_detect_results_dir       = None        # user-chosen results output folder (None = default)
 _detect_results_dir_label = None        # CTkLabel showing the chosen results folder
 
 # ── Detect tab – live thumbnail grid constants ────────────────────────────────
-_LIVE_THUMB_SIZE = 120   # max pixels per side for live preview thumbnails
-_LIVE_THUMB_COLS = 4     # columns in the live thumbnail grid
-_MAX_LIVE_THUMBS = 200   # max thumbnails kept in the grid at once
+_LIVE_THUMB_SIZE      = 120    # max pixels per side for live preview thumbnails
+_LIVE_THUMB_COLS      = 4      # columns in the live thumbnail grid
+_MAX_LIVE_THUMBS      = 200    # max thumbnails kept in the grid at once
+_LIVE_THUMB_BATCH     = 16     # thumbnails processed per UI poll tick
+_LIVE_THUMB_QUEUE_TMO = 0.5    # seconds the worker blocks waiting for a new path
 
 # ── Detect tab – live thumbnail grid state ────────────────────────────────────
 _detect_live_grid_overlay   = None   # CTkFrame covering image_label during detection
@@ -4594,7 +4596,7 @@ def select_detection_results_folder() -> None:
 
 def clear_detection_results_folder() -> None:
     global _detect_results_dir
-    _detect_results_dir = ""
+    _detect_results_dir = None
     _safe_label_configure(
         _detect_results_dir_label,
         text="Default (source folder / results)",
@@ -5555,7 +5557,7 @@ def _begin_image_detection() -> None:
                 cancel_flag=lambda: _detection_cancel_flag[0],
                 task=task_val,
                 device=_get_device(),
-                results_dir=_detect_results_dir if _detect_results_dir else None,
+                results_dir=_detect_results_dir,
             )
         except Exception as exc:
             root.after(0, lambda: messagebox.showerror("Detection Error", str(exc)))
@@ -5572,12 +5574,12 @@ def _run_thumb_worker() -> None:
     push them to the UI queue for the main thread to display."""
     while not _detect_thumb_stop.is_set():
         try:
-            path = _detect_thumb_path_queue.get(timeout=0.5)
+            path = _detect_thumb_path_queue.get(timeout=_LIVE_THUMB_QUEUE_TMO)
         except Empty:
             continue
         try:
             img = Image.open(path)
-            img.thumbnail((_LIVE_THUMB_SIZE, _LIVE_THUMB_SIZE), Image.Resampling.NEAREST)
+            img.thumbnail((_LIVE_THUMB_SIZE, _LIVE_THUMB_SIZE), Image.Resampling.LANCZOS)
             _detect_thumb_ui_queue.put((path, img))
         except Exception:
             pass
@@ -5586,8 +5588,7 @@ def _run_thumb_worker() -> None:
 def _poll_detect_thumbs() -> None:
     """Main-thread periodic callback: drain the UI thumbnail queue in batches and
     add thumbnails to the live grid. Re-schedules itself while detection is running."""
-    BATCH = 16
-    for _ in range(BATCH):
+    for _ in range(_LIVE_THUMB_BATCH):
         try:
             path, pil_img = _detect_thumb_ui_queue.get_nowait()
             _add_live_thumb(pil_img)
