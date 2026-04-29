@@ -91,6 +91,11 @@ def _match_epoch(raw_line: str, stripped_line: str):
 _EPOCH_INNER_TRAIN_RE = re.compile(
     r'^(\d+)/(\d+)\s+\S+\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+\S+\s+\S+:\s*(\d+)%')
 
+# Inner-epoch classification training progress: "2/300  0.402G  3.42  32  224: 7%"
+# (classification has only one loss value instead of box/cls/dfl)
+_EPOCH_INNER_CLS_RE = re.compile(
+    r'^(\d+)/(\d+)\s+\S+\s+([\d.]+)\s+\S+\s+\S+:\s*(\d+)%')
+
 # Validation progress: "Class  Images  Instances  Box(...): 3%"
 _EPOCH_INNER_VAL_RE = re.compile(
     r'Class\s+Images\s+Instances.*?:\s*(\d+)%')
@@ -912,6 +917,34 @@ _train_loss_data           = {"box_loss": [], "cls_loss": [], "dfl_loss": []}
 # Per-metric line colours for graphs
 _LOSS_GRAPH_COLORS         = {"box_loss": "#a6e3a1", "cls_loss": "#89b4fa", "dfl_loss": "#f38ba8"}
 
+# ── Training output header + console colour ───────────────────────────────────
+_train_output_header_lbl   = None      # CTkLabel – "… Training Output"
+_train_col_header_lbl      = None      # CTkLabel – column names row
+# Task → console text colour
+_TASK_CONSOLE_COLORS = {
+    "Detection":       "#cdd6f4",   # light grayish-blue (near-white)
+    "Segmentation":    "#daa520",   # Goldenrod
+    "Classification":  "#4169e1",   # RoyalBlue
+    "Pose Estimation": "#c71585",   # MediumVioletRed
+    "OBB Detection":   "#9400d3",   # DarkViolet
+}
+# Task → short prefix used in the "… Training Output" header
+_TASK_HEADER_PREFIXES = {
+    "Detection":       "Detection",
+    "Segmentation":    "Segmentation",
+    "Classification":  "Classification",
+    "Pose Estimation": "Pose",
+    "OBB Detection":   "OBB",
+}
+# Column-header text changes per task
+_TASK_COL_HEADERS = {
+    "Detection":       "  Epoch    GPU_mem   box_loss   cls_loss   dfl_loss  Instances       Size",
+    "Segmentation":    "  Epoch    GPU_mem   box_loss   cls_loss   dfl_loss  Instances       Size",
+    "Classification":  "  Epoch    GPU_mem       loss  Instances       Size",
+    "Pose Estimation": "  Epoch    GPU_mem   box_loss   cls_loss   dfl_loss  Instances       Size",
+    "OBB Detection":   "  Epoch    GPU_mem   box_loss   cls_loss   dfl_loss  Instances       Size",
+}
+
 # Graph widget refs (reset on tab switch, re-created when Train tab opens)
 _train_loss_graph_frame    = None      # CTkTabview holding the three graphs
 _train_loss_graph_canvases = {}        # {loss_name: FigureCanvasTkAgg}
@@ -1244,6 +1277,8 @@ def on_sidebar_select(key: str) -> None:
     _train_save_period_widget = None
     _train_epoch_bar = None
     _train_epoch_bar_label = None
+    _train_output_header_lbl = None
+    _train_col_header_lbl = None
     _train_loss_graph_frame = None
     _train_loss_graph_canvases = {}
     _train_loss_graph_figs = {}
@@ -1269,6 +1304,7 @@ def on_sidebar_select(key: str) -> None:
 def _on_task_type_change(*_args) -> None:
     global model_menu_widget, selected_model_var, task_type_var
     global _train_pose_widgets, _train_obb_widgets, _train_seg_widgets, _train_cls_task_widgets
+    global _train_output_header_lbl, _train_col_header_lbl, output_textbox
     if task_type_var is None or model_menu_widget is None:
         return
     task = task_type_var.get()
@@ -1302,6 +1338,36 @@ def _on_task_type_change(*_args) -> None:
     for w in _train_cls_task_widgets:
         _set_state_recursive(w, "normal" if is_cls else "disabled")
 
+    # Update "Training Output" header prefix
+    _task_prefix = _TASK_HEADER_PREFIXES.get(task, task)
+    if _train_output_header_lbl is not None:
+        try:
+            if _train_output_header_lbl.winfo_exists():
+                _train_output_header_lbl.configure(
+                    text=f"{_task_prefix} Training Output"
+                )
+        except Exception:
+            pass
+
+    # Update column-header text for this task
+    if _train_col_header_lbl is not None:
+        try:
+            if _train_col_header_lbl.winfo_exists():
+                _train_col_header_lbl.configure(
+                    text=_TASK_COL_HEADERS.get(task, _TASK_COL_HEADERS["Detection"])
+                )
+        except Exception:
+            pass
+
+    # Update console text colour for this task
+    _console_color = _TASK_CONSOLE_COLORS.get(task, "#cdd6f4")
+    if output_textbox is not None:
+        try:
+            if output_textbox.winfo_exists():
+                output_textbox.configure(text_color=_console_color)
+        except Exception:
+            pass
+
 
 def show_ai_train_window() -> None:
     global output_textbox, progress_bar, selected_model_var, task_type_var, model_menu_widget
@@ -1331,6 +1397,7 @@ def show_ai_train_window() -> None:
     global _train_data_btn_ref, _model_save_btn_ref, _custom_model_btn_ref
     global _train_stop_btn_ref
     global _train_epoch_bar, _train_epoch_bar_label
+    global _train_output_header_lbl, _train_col_header_lbl
     global _train_loss_graph_frame, _train_loss_graph_canvases, _train_loss_graph_figs
     # Reset task-specific widget lists
     _train_pose_widgets = []
@@ -3155,11 +3222,12 @@ def show_ai_train_window() -> None:
         })
 
         # ── Class names ───────────────────────────────────────────────────
+        # Always clear first so names from a previous job are not left behind
+        class_names_text.delete("1.0", "end")
         names = cfg.get("class_names", [])
         if names:
-            class_names_text.delete("1.0", "end")
             class_names_text.insert("1.0", "\n".join(names))
-            _train_form_state["class_names"] = "\n".join(names)
+        _train_form_state["class_names"] = "\n".join(names)
 
         # ── Model selection ───────────────────────────────────────────────
         saved_model = cfg.get("selected_model", "")
@@ -3347,11 +3415,12 @@ def show_ai_train_window() -> None:
                 except Exception:
                     pass
 
-        # Restore custom_model_path
+        # Restore custom_model_path – always update (even to empty) so a path
+        # from a previous job is not inherited by the newly loaded config.
         saved_custom = cfg.get("custom_model_path", "")
+        global custom_model_path
+        custom_model_path = saved_custom
         if saved_custom:
-            global custom_model_path
-            custom_model_path = saved_custom
             _safe_label_configure(
                 custom_model_label,
                 text=f"Custom: {Path(saved_custom).name}",
@@ -3360,6 +3429,17 @@ def show_ai_train_window() -> None:
             if _custom_model_btn_ref[0]:
                 try:
                     _custom_model_btn_ref[0].configure(fg_color="#2e7d32", hover_color="#1b5e20")
+                except Exception:
+                    pass
+        else:
+            _safe_label_configure(
+                custom_model_label,
+                text="Using built-in pretrained weights",
+                text_color="gray",
+            )
+            if _custom_model_btn_ref[0]:
+                try:
+                    _custom_model_btn_ref[0].configure(fg_color="#37474f", hover_color="#263238")
                 except Exception:
                     pass
 
@@ -3471,21 +3551,29 @@ def show_ai_train_window() -> None:
     )
 
     # ── Log panel ──────────────────────────────────────────────────────────
-    ctk.CTkLabel(
-        log_panel, text="Training Output", font=("Segoe UI", 14, "bold")
-    ).pack(anchor="w", padx=12, pady=(10, 4))
-
-    # Fixed column headers matching Ultralytics training output format
-    ctk.CTkLabel(
+    _cur_task = task_type_var.get() if task_type_var else "Detection"
+    _task_prefix = _TASK_HEADER_PREFIXES.get(_cur_task, _cur_task)
+    _train_output_header_lbl = ctk.CTkLabel(
         log_panel,
-        text="  Epoch    GPU_mem   box_loss   cls_loss   dfl_loss  Instances       Size",
+        text=f"{_task_prefix} Training Output",
+        font=("Segoe UI", 14, "bold"),
+    )
+    _train_output_header_lbl.pack(anchor="w", padx=12, pady=(10, 4))
+
+    # Column headers – change text per task
+    _train_col_header_lbl = ctk.CTkLabel(
+        log_panel,
+        text=_TASK_COL_HEADERS.get(_cur_task, _TASK_COL_HEADERS["Detection"]),
         font=("Courier New", 10),
         text_color="#6c7086",
         anchor="w",
-    ).pack(fill="x", padx=12, pady=(0, 0))
+    )
+    _train_col_header_lbl.pack(fill="x", padx=12, pady=(0, 0))
 
+    _console_color = _TASK_CONSOLE_COLORS.get(_cur_task, "#cdd6f4")
     output_textbox = ctk.CTkTextbox(
-        log_panel, font=("Courier New", 12), corner_radius=8, height=312
+        log_panel, font=("Courier New", 12), corner_radius=8, height=312,
+        text_color=_console_color,
     )
     output_textbox.pack(fill="x", padx=12, pady=(0, 4))
 
@@ -6384,6 +6472,34 @@ def _load_results_csv_into_graphs(project_name_: str) -> bool:
         cls_idx = _find_col("cls_loss")
         dfl_idx = _find_col("dfl_loss")
 
+        # ── Classification CSV detection ─────────────────────────────────
+        # Classification results.csv does not have box/cls/dfl loss columns;
+        # instead it has "train/loss" (and accuracy metrics).  Detect this by
+        # the absence of any box_loss column and the presence of "train/loss".
+        loss_idx = _find_col("train/loss")
+        is_cls_csv = (box_idx == -1 and loss_idx != -1)
+
+        if is_cls_csv:
+            # Map "train/loss" → cls_loss only; clear box and dfl graphs.
+            _train_loss_data["box_loss"] = []
+            _train_loss_data["dfl_loss"] = []
+            cls_vals = []
+            for raw in lines[1:]:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                parts = [p.strip() for p in raw.split(",")]
+                if len(parts) <= loss_idx:
+                    continue
+                try:
+                    cls_vals.append(float(parts[loss_idx]))
+                except (ValueError, IndexError):
+                    pass
+            if not cls_vals:
+                return False
+            _train_loss_data["cls_loss"] = cls_vals
+            return True
+
         # Fall back to positional indices (epoch=0, time=1, box=2, cls=3, dfl=4)
         # if the header does not contain the expected column names.
         if box_idx == -1:
@@ -6594,11 +6710,18 @@ def _update_epoch_inner_progress(pct: int, is_validation: bool,
 
     # When the training phase of an epoch reaches 100%, immediately commit the
     # loss values and refresh graphs – BEFORE validation begins.
-    if not is_validation and pct == 100 and box is not None:
+    # Only append to a graph series when the caller supplied a non-None value
+    # (classification only supplies cls_; detection/segmentation supply all three).
+    has_loss = (not is_validation and pct == 100
+                and any(v is not None for v in (box, cls_, dfl)))
+    if has_loss:
         _train_pending_losses[0] = (box, cls_, dfl)
-        _train_loss_data["box_loss"].append(box)
-        _train_loss_data["cls_loss"].append(cls_)
-        _train_loss_data["dfl_loss"].append(dfl)
+        if box is not None:
+            _train_loss_data["box_loss"].append(box)
+        if cls_ is not None:
+            _train_loss_data["cls_loss"].append(cls_)
+        if dfl is not None:
+            _train_loss_data["dfl_loss"].append(dfl)
         # Mark as already committed so _update_train_progress won't re-add
         _train_pending_losses[0] = None
         _refresh_all_loss_graphs()
@@ -6689,9 +6812,12 @@ def _run_training_subprocess(
                 # Commit losses from the epoch that just finished
                 if _train_last_epoch_num[0] > 0 and _train_pending_losses[0] is not None:
                     box_v, cls_v, dfl_v = _train_pending_losses[0]
-                    _train_loss_data["box_loss"].append(box_v)
-                    _train_loss_data["cls_loss"].append(cls_v)
-                    _train_loss_data["dfl_loss"].append(dfl_v)
+                    if box_v is not None:
+                        _train_loss_data["box_loss"].append(box_v)
+                    if cls_v is not None:
+                        _train_loss_data["cls_loss"].append(cls_v)
+                    if dfl_v is not None:
+                        _train_loss_data["dfl_loss"].append(dfl_v)
                     root.after(0, _refresh_all_loss_graphs)
                 # Record how long the epoch took
                 if _train_last_epoch_start[0] is not None:
@@ -6757,7 +6883,7 @@ def _run_training_subprocess(
                     ep_tot = int(m.group(2))
                     root.after(0, lambda c=ep_cur, t=ep_tot: _update_train_progress(c, t))
 
-                # Inner-epoch training progress (includes loss values)
+                # Inner-epoch training progress (detection/segmentation: box+cls+dfl losses)
                 m_train = _EPOCH_INNER_TRAIN_RE.match(line)
                 if m_train:
                     pct = int(m_train.group(6))
@@ -6771,6 +6897,27 @@ def _run_training_subprocess(
                         _train_pending_losses[0] = (box_v, cls_v, dfl_v)
                     root.after(0, lambda p=pct, b=box_v, c=cls_v, d=dfl_v:
                                _update_epoch_inner_progress(p, False, b, c, d))
+                    continue
+
+                # Inner-epoch classification training progress (single loss value)
+                m_cls_train = _EPOCH_INNER_CLS_RE.match(line)
+                if m_cls_train:
+                    pct = int(m_cls_train.group(4))
+                    try:
+                        loss_v = float(m_cls_train.group(3))
+                    except (ValueError, IndexError):
+                        loss_v = None
+                    # Classification has only one loss; store it as cls_loss.
+                    # box_loss and dfl_loss are not used – pass None to skip them.
+                    if pct == 100 and loss_v is not None:
+                        _train_pending_losses[0] = (None, loss_v, None)
+                    root.after(0, lambda p=pct, lv=loss_v:
+                               _update_epoch_inner_progress(
+                                   p, False,
+                                   None,  # box (unused for classification)
+                                   lv,    # cls = training loss
+                                   None,  # dfl (unused for classification)
+                               ))
                     continue
 
                 # Validation progress
@@ -6822,9 +6969,12 @@ def _training_finished() -> None:
     # Commit any pending losses from the final epoch
     if _train_pending_losses[0] is not None:
         box_v, cls_v, dfl_v = _train_pending_losses[0]
-        _train_loss_data["box_loss"].append(box_v)
-        _train_loss_data["cls_loss"].append(cls_v)
-        _train_loss_data["dfl_loss"].append(dfl_v)
+        if box_v is not None:
+            _train_loss_data["box_loss"].append(box_v)
+        if cls_v is not None:
+            _train_loss_data["cls_loss"].append(cls_v)
+        if dfl_v is not None:
+            _train_loss_data["dfl_loss"].append(dfl_v)
         _train_pending_losses[0] = None
         _refresh_all_loss_graphs()
 
