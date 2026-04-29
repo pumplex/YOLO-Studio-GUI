@@ -489,20 +489,49 @@ def train_yolo(data_yaml, model_type, img_size, batch, epochs, model_save_path,
     if 'val' in ep:
         train_kwargs['val'] = bool(ep['val'])
 
-    # For classification tasks where data is a directory: if there is no val/
-    # subfolder Ultralytics sets data['val'] = None, which propagates to
-    # torchvision.datasets.ImageFolder(root=None) → os.path.expanduser(None) →
-    # TypeError on Windows.  Disable validation automatically in that case so
-    # training can still complete; the user can add a val/<class>/ structure to
-    # re-enable it.
-    if task == 'classify' and os.path.isdir(str(data_yaml)):
-        val_dir = Path(data_yaml) / 'val'
-        if not val_dir.is_dir():
+    # For classification tasks where data is a directory, Ultralytics always
+    # builds a val dataloader inside _build_train_pipeline regardless of the
+    # val=False flag.  When the dataset has no val/ (or validation/ / valid/)
+    # subfolder, check_cls_dataset returns data['val'] = None, which then flows
+    # into ImageFolder(root=None) → os.path.expanduser(None) → TypeError.
+    #
+    # Fix: detect the missing val folder and monkey-patch
+    # ultralytics.engine.trainer.check_cls_dataset to substitute the training
+    # path as a fallback so the val dataloader can be constructed without
+    # crashing.  We also set val=False so no per-epoch validation metrics are
+    # reported against the (training-data) fallback loader.
+    if os.path.isdir(str(data_yaml)):
+        _data_dir = Path(data_yaml)
+        _val_ok = False
+        for _alias in ('val', 'validation', 'valid'):
+            _v = _data_dir / _alias
+            if _v.is_dir():
+                try:
+                    _val_ok = any(p.is_dir() for p in _v.iterdir())
+                except OSError:
+                    pass
+                if _val_ok:
+                    break
+        if not _val_ok:
             print(
-                "  ⚠  Classification dataset has no 'val/' subfolder – disabling\n"
-                "     validation to avoid a crash (os.path.expanduser(None)).\n"
-                "     Add a 'val/<class>/' folder structure to enable validation."
+                "  ⚠  Classification dataset has no usable val/<class>/ subfolder.\n"
+                "     Patching Ultralytics to use the training split as a val\n"
+                "     placeholder so training can proceed without crashing.\n"
+                "     Add a val/<class>/ folder structure to enable real validation."
             )
+            try:
+                import ultralytics.engine.trainer as _ult_trainer
+                _orig_check_cls = _ult_trainer.check_cls_dataset
+
+                def _check_cls_train_fallback(dataset, split=''):
+                    result = _orig_check_cls(dataset, split)
+                    if result.get('val') is None:
+                        result['val'] = result.get('train')
+                    return result
+
+                _ult_trainer.check_cls_dataset = _check_cls_train_fallback
+            except Exception as _patch_exc:
+                print(f"  ⚠  Could not apply val-fallback patch: {_patch_exc}")
             train_kwargs['val'] = False
 
     # max_det (only when val is True)
