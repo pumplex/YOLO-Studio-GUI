@@ -2844,7 +2844,9 @@ def show_ai_train_window() -> None:
         if _train_classes_var is not None:
             raw_cls = cfg.get("classes", "")
             if isinstance(raw_cls, list):
-                raw_cls = ",".join(str(x) for x in raw_cls)
+                raw_cls = ",".join(str(int(x)) if isinstance(x, (int, float)) else str(x) for x in raw_cls)
+            elif raw_cls is None:
+                raw_cls = ""
             _train_classes_var.set(str(raw_cls))
         if _train_fraction_var is not None:
             _train_fraction_var.set(f"{cfg.get('fraction', 1.0):.4g}")
