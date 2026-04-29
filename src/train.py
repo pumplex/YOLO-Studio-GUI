@@ -489,6 +489,51 @@ def train_yolo(data_yaml, model_type, img_size, batch, epochs, model_save_path,
     if 'val' in ep:
         train_kwargs['val'] = bool(ep['val'])
 
+    # For classification tasks where data is a directory, Ultralytics always
+    # builds a val dataloader inside _build_train_pipeline regardless of the
+    # val=False flag.  When the dataset has no val/ (or validation/ / valid/)
+    # subfolder, check_cls_dataset returns data['val'] = None, which then flows
+    # into ImageFolder(root=None) → os.path.expanduser(None) → TypeError.
+    #
+    # Fix: detect the missing val folder and monkey-patch
+    # ultralytics.engine.trainer.check_cls_dataset to substitute the training
+    # path as a fallback so the val dataloader can be constructed without
+    # crashing.  We also set val=False so no per-epoch validation metrics are
+    # reported against the (training-data) fallback loader.
+    if os.path.isdir(str(data_yaml)):
+        _data_dir = Path(data_yaml)
+        _val_ok = False
+        for _alias in ('val', 'validation', 'valid'):
+            _v = _data_dir / _alias
+            if _v.is_dir():
+                try:
+                    _val_ok = any(p.is_dir() for p in _v.iterdir())
+                except OSError:
+                    pass
+                if _val_ok:
+                    break
+        if not _val_ok:
+            print(
+                "  ⚠  Classification dataset has no usable val/<class>/ subfolder.\n"
+                "     Patching Ultralytics to use the training split as a val\n"
+                "     placeholder so training can proceed without crashing.\n"
+                "     Add a val/<class>/ folder structure to enable real validation."
+            )
+            try:
+                import ultralytics.engine.trainer as _ult_trainer
+                _orig_check_cls = _ult_trainer.check_cls_dataset
+
+                def _check_cls_train_fallback(dataset, split=''):
+                    result = _orig_check_cls(dataset, split)
+                    if result.get('val') is None:
+                        result['val'] = result.get('train')
+                    return result
+
+                _ult_trainer.check_cls_dataset = _check_cls_train_fallback
+            except Exception as _patch_exc:
+                print(f"  ⚠  Could not apply val-fallback patch: {_patch_exc}")
+            train_kwargs['val'] = False
+
     # max_det (only when val is True)
     if ep.get('val', True) and 'max_det' in ep:
         try:
@@ -685,6 +730,66 @@ def train_yolo(data_yaml, model_type, img_size, batch, epochs, model_save_path,
     if 'dropout' in ep:
         try:
             train_kwargs['dropout'] = float(ep['dropout'])
+        except (ValueError, TypeError):
+            pass
+
+    # ── Augmentation hyperparameters ──────────────────────────────────────
+
+    # augment (TTA during validation; default False)
+    if 'augment' in ep:
+        train_kwargs['augment'] = bool(ep['augment'])
+
+    # HSV colour jitter
+    for _key in ('hsv_h', 'hsv_s', 'hsv_v'):
+        if _key in ep:
+            try:
+                train_kwargs[_key] = float(ep[_key])
+            except (ValueError, TypeError):
+                pass
+
+    # Geometric augmentations
+    for _key in ('degrees', 'translate', 'scale', 'shear', 'perspective'):
+        if _key in ep:
+            try:
+                train_kwargs[_key] = float(ep[_key])
+            except (ValueError, TypeError):
+                pass
+
+    # Flip probabilities
+    for _key in ('flipud', 'fliplr', 'bgr'):
+        if _key in ep:
+            try:
+                train_kwargs[_key] = float(ep[_key])
+            except (ValueError, TypeError):
+                pass
+
+    # Mosaic / mixup / copy-paste
+    for _key in ('mosaic', 'mixup', 'copy_paste'):
+        if _key in ep:
+            try:
+                train_kwargs[_key] = float(ep[_key])
+            except (ValueError, TypeError):
+                pass
+
+    # copy_paste_mode (string: 'flip' or 'mixup')
+    if 'copy_paste_mode' in ep:
+        train_kwargs['copy_paste_mode'] = str(ep['copy_paste_mode'])
+
+    # auto_augment policy (classification; string)
+    if 'auto_augment' in ep:
+        train_kwargs['auto_augment'] = str(ep['auto_augment'])
+
+    # erasing (random erasing probability; default 0.4)
+    if 'erasing' in ep:
+        try:
+            train_kwargs['erasing'] = float(ep['erasing'])
+        except (ValueError, TypeError):
+            pass
+
+    # crop_fraction (classification crop; default 1.0)
+    if 'crop_fraction' in ep:
+        try:
+            train_kwargs['crop_fraction'] = float(ep['crop_fraction'])
         except (ValueError, TypeError):
             pass
 
